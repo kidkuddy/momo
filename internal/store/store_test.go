@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -138,5 +139,61 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Clearing must take everything about a room with it. A half-cleared room is worse
+// than either state: the agent would resume a conversation whose messages are gone.
+func TestClearRoomRemovesEverything(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	now := time.Now()
+
+	must(t, s.SaveMessage(ctx, msg("$1", "!a", "@x:s", "hello", now)))
+	must(t, s.SaveMessage(ctx, msg("$2", "!keep", "@x:s", "other room", now)))
+	must(t, s.SaveReaction(ctx, core.Reaction{EventID: "$r", RoomID: "!a", TargetID: "$1", Key: "👍", Timestamp: now}))
+	must(t, s.SavePoll(ctx, core.PollRecord{
+		EventID: "$p", RoomID: "!a", Question: "?", Timestamp: now,
+		Answers: []core.PollAnswer{{ID: "answer-0", Text: "yes"}},
+	}))
+	must(t, s.SavePollVote(ctx, core.PollVote{EventID: "$v", PollID: "$p", RoomID: "!a", Sender: "@x:s", Timestamp: now}))
+	must(t, s.SetSession(ctx, "!a", "$1", "sess-1"))
+
+	must(t, s.ClearRoom(ctx, "!a"))
+
+	if got, _ := s.Messages(ctx, core.HistoryFilter{RoomID: "!a"}); len(got) != 0 {
+		t.Errorf("%d messages survived", len(got))
+	}
+	if got, _ := s.Reactions(ctx, "!a", "$1"); len(got) != 0 {
+		t.Errorf("%d reactions survived", len(got))
+	}
+	if _, err := s.Poll(ctx, "!a", "$p"); !errors.Is(err, core.ErrNotFound) {
+		t.Errorf("poll survived: %v", err)
+	}
+	if got, _ := s.PollVotes(ctx, "$p"); len(got) != 0 {
+		t.Errorf("%d votes survived", len(got))
+	}
+	if got, _ := s.SessionFor(ctx, "!a", "$1"); got != "" {
+		t.Errorf("agent session survived: %q", got)
+	}
+	// Other rooms must be untouched.
+	if got, _ := s.Messages(ctx, core.HistoryFilter{RoomID: "!keep"}); len(got) != 1 {
+		t.Errorf("clearing one room took %d messages from another", 1-len(got))
+	}
+}
+
+// Forgetting the session without wiping the transcript: start a new conversation but
+// keep the record of the old one.
+func TestClearSessionsKeepsHistory(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	must(t, s.SaveMessage(ctx, msg("$1", "!a", "@x:s", "hello", time.Now())))
+	must(t, s.SetSession(ctx, "!a", "$1", "sess-1"))
+
+	must(t, s.ClearSessions(ctx, "!a"))
+
+	if got, _ := s.SessionFor(ctx, "!a", "$1"); got != "" {
+		t.Errorf("session survived: %q", got)
+	}
+	if got, _ := s.Messages(ctx, core.HistoryFilter{RoomID: "!a"}); len(got) != 1 {
+		t.Errorf("history was destroyed: %d messages", len(got))
 	}
 }

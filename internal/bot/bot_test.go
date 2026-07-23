@@ -54,7 +54,7 @@ func TestHandleRepliesInThread(t *testing.T) {
 	} {
 		chat := &fakeChat{}
 		b := New(Deps{
-			Chat: chat, History: nopHistory{}, Engine: fakeEngine{},
+			Chat: chat, History: nopHistory{}, Engine: &fakeEngine{},
 			SelfID: self, Allowed: allowed,
 			Chunk: func(s string, _ int) []string { return []string{s} },
 		})
@@ -78,7 +78,7 @@ func TestHandleRepliesInThread(t *testing.T) {
 func TestHandleChunksStayThreaded(t *testing.T) {
 	chat := &fakeChat{}
 	b := New(Deps{
-		Chat: chat, History: nopHistory{}, Engine: fakeEngine{},
+		Chat: chat, History: nopHistory{}, Engine: &fakeEngine{},
 		SelfID: self, Allowed: allowed,
 		Chunk: func(s string, _ int) []string { return []string{"one", "two", "three"} },
 	})
@@ -132,10 +132,33 @@ func (f *fakeChat) MarkRead(context.Context, string, string) error              
 func (f *fakeChat) StartPoll(context.Context, string, core.Poll) (string, error)   { return "", nil }
 func (f *fakeChat) EndPoll(context.Context, string, string) (string, error)        { return "", nil }
 
-type fakeEngine struct{}
+type fakeEngine struct {
+	reply string
+	tasks []core.Task
+}
 
-func (fakeEngine) Name() string                       { return "fake" }
-func (fakeEngine) Run(context.Context, string) string { return "reply" }
+func (fakeEngine) Name() string { return "fake" }
+func (f *fakeEngine) Run(_ context.Context, t core.Task) (core.Answer, error) {
+	f.tasks = append(f.tasks, t)
+	reply := f.reply
+	if reply == "" {
+		reply = "reply"
+	}
+	return core.Answer{Reply: reply, SessionID: "sess-1"}, nil
+}
+
+// fakeSessions records the thread-to-session mapping in memory.
+type fakeSessions struct{ ids map[string]string }
+
+func newFakeSessions() *fakeSessions { return &fakeSessions{ids: map[string]string{}} }
+
+func (f *fakeSessions) SessionFor(_ context.Context, room, thread string) (string, error) {
+	return f.ids[room+thread], nil
+}
+func (f *fakeSessions) SetSession(_ context.Context, room, thread, id string) error {
+	f.ids[room+thread] = id
+	return nil
+}
 
 type nopHistory struct{}
 
@@ -162,3 +185,80 @@ func (nopHistory) PollVotes(context.Context, string) ([]core.PollVote, error) {
 	return nil, nil
 }
 func (nopHistory) Close() error { return nil }
+
+// A thread is one conversation: the agent session id from the last reply must come
+// back as ResumeID on the next message, or every message starts a stranger.
+func TestHandleResumesSessionPerThread(t *testing.T) {
+	eng := &fakeEngine{}
+	sessions := newFakeSessions()
+	b := New(Deps{
+		Chat: &fakeChat{}, History: nopHistory{}, Engine: eng, Sessions: sessions,
+		SelfID: self, Allowed: allowed,
+		Chunk: func(s string, _ int) []string { return []string{s} },
+	})
+
+	b.Handle(context.Background(), core.Message{EventID: "$a", RoomID: "!r", Body: "first"})
+	if got := eng.tasks[0].ResumeID; got != "" {
+		t.Fatalf("first message resumed %q, want a fresh session", got)
+	}
+
+	b.Handle(context.Background(), core.Message{EventID: "$b", RoomID: "!r", Body: "second", ThreadRoot: "$a"})
+	if got := eng.tasks[1].ResumeID; got != "sess-1" {
+		t.Fatalf("second message resumed %q, want sess-1", got)
+	}
+
+	// A different thread is a different conversation.
+	b.Handle(context.Background(), core.Message{EventID: "$c", RoomID: "!r", Body: "elsewhere"})
+	if got := eng.tasks[2].ResumeID; got != "" {
+		t.Fatalf("new thread resumed %q, want a fresh session", got)
+	}
+}
+
+// An agent engine answers by calling the CLI. When it has, the bot must not also
+// post the engine's text, or every message gets answered twice.
+func TestHandleDoesNotDoubleReply(t *testing.T) {
+	chat := &fakeChat{}
+	sent := 0
+	b := New(Deps{
+		Chat: chat, History: nopHistory{}, Engine: &fakeEngine{}, Sessions: newFakeSessions(),
+		SelfID: self, Allowed: allowed,
+		Chunk:        func(s string, _ int) []string { return []string{s} },
+		SentInThread: func(string) int { return sent },
+	})
+
+	// The agent posted one message of its own while running.
+	sent = 0
+	origRun := b.d.Engine
+	b.d.Engine = &replyingEngine{inner: origRun, onRun: func() { sent++ }}
+
+	b.Handle(context.Background(), core.Message{EventID: "$a", RoomID: "!r", Body: "hi"})
+	if len(chat.sent) != 0 {
+		t.Fatalf("bot posted %d messages on top of the agent's own reply", len(chat.sent))
+	}
+}
+
+// A session that ends without saying anything must not look like a hang.
+func TestHandleSpeaksWhenEngineIsSilent(t *testing.T) {
+	chat := &fakeChat{}
+	b := New(Deps{
+		Chat: chat, History: nopHistory{}, Engine: &fakeEngine{reply: " "}, Sessions: newFakeSessions(),
+		SelfID: self, Allowed: allowed,
+		Chunk: func(s string, _ int) []string { return []string{s} },
+	})
+	b.Handle(context.Background(), core.Message{EventID: "$a", RoomID: "!r", Body: "hi"})
+	if len(chat.sent) != 1 {
+		t.Fatalf("sent %d messages, want 1", len(chat.sent))
+	}
+}
+
+// replyingEngine simulates an agent that answers through the CLI during its run.
+type replyingEngine struct {
+	inner core.Engine
+	onRun func()
+}
+
+func (r *replyingEngine) Name() string { return "replying" }
+func (r *replyingEngine) Run(ctx context.Context, t core.Task) (core.Answer, error) {
+	r.onRun()
+	return core.Answer{Reply: "this must not be posted", SessionID: "sess-1"}, nil
+}

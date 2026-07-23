@@ -109,6 +109,31 @@ response events are encrypted and momo only decrypts what it receives live.
 Polls use the unstable MSC3381 namespace. Element renders them today; that is not a
 guarantee for other clients or future versions.
 
+## Starting a conversation over
+
+```bash
+momo clear <room>                  # redact momo's messages, wipe history and sessions
+momo clear <room> --sessions-only  # forget the agent session, keep the transcript
+momo clear <room> --local          # wipe what momo stores, leave the room alone
+```
+
+`--sessions-only` is the one to reach for when a conversation has gone in circles: the
+next message starts a fresh agent session with no memory, without destroying anything.
+
+momo cannot redact *your* messages — that needs a power level it does not have in a
+DM you created. Say so rather than implying the room was emptied.
+
+## Profiles
+
+Every command takes `--profile <name>` to act as a particular bot. Without it, momo
+uses the working directory. Inside an agent session `MOMO_PROFILE` is already set, so
+plain `momo send` reaches the right daemon.
+
+```bash
+momo profiles
+momo --profile work rooms
+```
+
 ## Rooms
 
 ```bash

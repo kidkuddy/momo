@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/kidkuddy/momo/internal/bot"
 	"github.com/kidkuddy/momo/internal/core"
+	"github.com/kidkuddy/momo/internal/engine"
+	"github.com/kidkuddy/momo/internal/ipc"
 	"github.com/kidkuddy/momo/internal/matrix"
 )
 
@@ -21,21 +24,35 @@ func (a *app) daemon(ctx context.Context) error {
 		return err
 	}
 
+	// An agent engine answers by shelling out to this same binary, which must not
+	// open the crypto store a second time. The socket is how it comes back in.
+	socket := a.profile.Socket
+	eng := a.newEngine(socket)
+
 	b := bot.New(bot.Deps{
-		Chat:    a.chat,
-		Rooms:   a.rooms,
-		History: a.history,
-		Engine:  a.engine,
-		SelfID:  self,
-		Allowed: a.allowed,
-		MaxBody: matrix.MaxBody,
-		Chunk:   matrix.Chunk,
+		Chat:         a.chat,
+		History:      a.history,
+		Engine:       eng,
+		Sessions:     a.history,
+		SelfID:       self,
+		Allowed:      a.allowed,
+		MaxBody:      matrix.MaxBody,
+		Chunk:        matrix.Chunk,
+		Workdir:      workdir(),
+		SentInThread: a.sends.count,
 	})
 
-	a.startBackup(ctx)
-	a.reportDecryptFailures(self)
+	go func() {
+		if err := ipc.Serve(ctx, socket, a.handleIPC); err != nil {
+			log.Printf("ipc: %v", err)
+		}
+	}()
 
-	log.Printf("momo as %s (device %s), obeying %s, engine=%s", self, device, a.allowed, a.engine.Name())
+	a.startBackup(ctx)
+	a.reportDecryptFailures()
+
+	log.Printf("momo as %s (device %s), obeying %s, engine=%s, workdir=%s, socket=%s",
+		self, device, a.allowed, eng.Name(), workdir(), socket)
 
 	err = a.mx.Sync(ctx, matrix.Handlers{
 		OnMessage: func(ctx context.Context, m core.Message) {
@@ -62,9 +79,7 @@ func (a *app) daemon(ctx context.Context) error {
 		OnPoll: func(ctx context.Context, p core.PollRecord) {
 			if err := a.history.SavePoll(ctx, p); err != nil {
 				log.Printf("history: %v", err)
-				return
 			}
-			log.Printf("poll %s: %q", p.EventID, p.Question)
 		},
 		OnPollVote: func(ctx context.Context, v core.PollVote) {
 			if err := a.history.SavePollVote(ctx, v); err != nil {
@@ -78,8 +93,8 @@ func (a *app) daemon(ctx context.Context) error {
 				log.Printf("history: %v", err)
 			}
 		},
-		// The allowlist governs invites too: anyone who can get momo into a room
-		// can talk to it.
+		// The allowlist governs invites too: anyone who can get momo into a room can
+		// talk to it.
 		ShouldJoin: func(inviter string) bool {
 			if inviter != a.allowed {
 				log.Printf("ignoring invite from %s", inviter)
@@ -96,6 +111,69 @@ func (a *app) daemon(ctx context.Context) error {
 	return nil
 }
 
+// handleIPC runs a command forwarded by another momo process — in practice, an agent
+// session replying through the CLI.
+func (a *app) handleIPC(ctx context.Context, req ipc.Request) (string, error) {
+	log.Printf("ipc: %s %v", req.Command, req.Args)
+	return a.runCommand(ctx, req.Command, req.Args)
+}
+
+// sendTracker counts what momo has posted per thread, so the bot can tell whether an
+// agent answered for itself.
+type sendTracker struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+func newSendTracker() *sendTracker { return &sendTracker{n: map[string]int{}} }
+
+func (s *sendTracker) record(threadRoot string) {
+	if threadRoot == "" {
+		return
+	}
+	s.mu.Lock()
+	s.n[threadRoot]++
+	s.mu.Unlock()
+}
+
+func (s *sendTracker) count(threadRoot string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n[threadRoot]
+}
+
+// newEngine picks the backend. Echo is the default on purpose: a stray run of momo
+// must never be able to execute anything.
+func (a *app) newEngine(socket string) core.Engine {
+	if os.Getenv("ENGINE") != "claude" {
+		return engine.Echo{}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		self = "momo"
+	}
+	return engine.Claude{
+		Binary:         os.Getenv("CLAUDE_BIN"),
+		MomoBinary:     self,
+		Workdir:        workdir(),
+		Timeout:        engineTimeout(),
+		SocketPath:     socket,
+		PermissionMode: os.Getenv("ENGINE_PERMISSION_MODE"),
+		AllowedTools:   os.Getenv("ENGINE_ALLOWED_TOOLS"),
+	}
+}
+
+func workdir() string { return envOr("WORKDIR", os.Getenv("HOME")) }
+
+func engineTimeout() time.Duration {
+	if v := os.Getenv("ENGINE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 10 * time.Minute
+}
+
 // startBackup wires room key backup if one exists. Absence is not fatal: momo runs
 // fine without it, it just is not durable.
 func (a *app) startBackup(ctx context.Context) {
@@ -108,14 +186,14 @@ func (a *app) startBackup(ctx context.Context) {
 		log.Print("no room key backup; run `momo backup <recovery key>` to create one")
 		return
 	}
-	done, failed := a.mx.BackupAll(ctx, target) // catch up on anything missed
+	done, failed := a.mx.BackupAll(ctx, target)
 	log.Printf("key backup version %s (%d keys uploaded, %d failed)", target.Version(), done, failed)
 	a.mx.WatchNewSessions(target)
 }
 
 // reportDecryptFailures says something in the room once, because silence looks
 // exactly like a hang.
-func (a *app) reportDecryptFailures(self string) {
+func (a *app) reportDecryptFailures() {
 	var warned sync.Map
 	a.mx.OnDecryptError(func(roomID, eventID, sender string, err error) {
 		log.Printf("cannot decrypt %s in %s: %v", eventID, roomID, err)

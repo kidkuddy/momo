@@ -1,93 +1,86 @@
 # momo — roadmap
 
-A Matrix bot that is the chat UI for Claude Code sessions. You talk to it in an
-encrypted DM; it runs Claude Code and answers in the thread.
+A Matrix bot that is the chat UI for Claude Code. You talk to it in an encrypted DM;
+it spawns an agent session in the background, which reasons and answers in the thread
+by calling momo's own CLI.
 
-Status legend: `[x]` done · `[ ]` planned · `[~]` partially done
+Status: `[x]` done · `[ ]` planned
 
-## Phase 0 — encryption (done)
+## Done
 
-- [x] mautrix-based client, pure-Go olm (`goolm` build tag)
-- [x] E2EE send + receive, verified in a real encrypted DM
-- [x] Persistent crypto store, room state survives restarts
-- [x] Cross-signing, own device signed (`momo crosssign`)
-- [x] Server-side room key backup + restore (`momo backup` / `momo restore`)
-- [x] Clean shutdown, WAL checkpointed
+**Encryption.** mautrix client on pure-Go olm (`goolm` tag). E2EE send and receive
+verified in a real encrypted DM. Persistent crypto store, room state survives
+restarts. Cross-signing (`momo crosssign`). Server-side room key backup and restore.
+Clean shutdown with WAL checkpoint.
 
-## Phase 1 — repo (this pass)
+**Repo.** `cmd/` + `internal/`, module `github.com/kidkuddy/momo`. Ports and adapters:
+domain and interfaces in `internal/core`, adapters implement them, `cmd/momo` is the
+only composition root. MIT, git, conventional commits.
 
-- [x] Go layout: `cmd/` + `internal/`, module `github.com/kidkuddy/momo`
-- [x] Clean architecture: domain ports in `internal/core`, adapters implement them
-- [x] MIT license, README, git repo, conventional commits
-- [x] Scrub personal identifiers from docs before going public
+**History.** SQLite in its own `history.db`, separate from mautrix's `momo.db`.
+Messages both directions, reactions, redactions, polls and votes. Queryable by room,
+thread, sender, time.
 
-## Phase 2 — history (this pass)
+**CLI.** `daemon send upload react edit redact typing read poll endpoll poll-results
+rooms join leave invite whoami history crosssign backup restore reset-session`.
 
-- [x] SQLite message history in its own `history.db`, separate from mautrix's `momo.db`
-- [x] Records both directions, including momo's own sends
-- [x] Reactions and redactions tracked, not just messages
-- [x] Query by room, thread, sender, time
+**Polls.** Start, end, and read votes back. `core.Tally` implements the MSC3381
+counting rules as a pure function.
 
-## Phase 3 — own-message readability (investigated, no change needed)
+**Skills.** `matrix-cli`, `matrix-events`, `matrix-e2ee`, `momo-dev`.
 
-- [x] Verified that momo can already read back its own messages
+## In progress — the agent engine
 
-  This was on the list because a decrypt failure on one of momo's own messages
-  looked like a missing inbound copy of the outbound megolm session. It was not.
-  mautrix creates that copy at send time in `encryptmegolm.go`, via
-  `createGroupSession` — a level of indirection that a grep for `PutGroupSession`
-  in that file misses.
+The point of the project. An incoming message spawns an agent session in the
+background; the agent reasons and replies by calling the momo CLI, so anything momo
+can do in Matrix, the agent can do.
 
-  The original failure had a duller cause: the crypto store had been deleted, which
-  destroyed the session along with everything else. Confirmed by experiment — with
-  our own retain code removed, a freshly rotated outbound session still gets a
-  matching inbound row with `key_source=direct`. The code written for this was
-  deleted rather than shipped.
+- [ ] **Engine interface that carries context.** `Run(ctx, Session) (Result, error)`
+      where Session has the room, thread and prior session id. An engine may answer
+      by returning text, or by acting through the CLI and reporting that it did.
+      Claude Code is one implementation; Codex or anything else is another.
+- [ ] **Session continuity.** Thread root maps to an agent session id, passed back as
+      `--resume`. Without it every message starts a fresh agent with no memory of the
+      conversation — the single thing that makes momo feel like a mailbox.
+- [ ] **Daemon IPC.** The daemon owns the crypto store. A second process cannot
+      safely share an olm account with it: concurrent use of the same megolm ratchet
+      risks reusing a message index. So `momo send` from inside an agent session must
+      forward to the running daemon over a unix socket rather than open the store
+      itself, falling back to direct access when no daemon is running.
+- [ ] **Secret redaction** on output before it reaches room history. Claude Code
+      echoes env vars and tokens; room history is durable and, on a hosted
+      homeserver, sits on someone else's disk.
+- [ ] **Room to working directory binding**, so a session cannot wander the
+      filesystem.
+- [ ] **Concurrency cap.** The sync loop currently stalls during an engine run, which
+      accidentally limits momo to one session. That stops being true the moment
+      anything runs asynchronously.
 
-## Phase 4 — CLI (this pass)
+## Next
 
-Every Matrix action momo can take is a subcommand, so Claude Code drives it through
-skills rather than through bespoke glue.
+- [ ] **Stream via edits.** Placeholder message, then `m.replace` as output arrives.
+      Debounce to about 1/sec or the server throttles and it reads worse than no
+      streaming at all.
+- [ ] **Approval gates.** The plumbing exists — momo records poll starts, votes and
+      closes, and can tally them. What is missing is an engine that *waits* on a
+      result before acting.
 
-- [x] `daemon` — the bot
-- [x] `send` — text/html/notice/emote, `--thread`, `--reply`
-- [x] `upload` — file/image/video/audio, encrypted in encrypted rooms
-- [x] `react` `edit` `redact` — annotate and amend
-- [x] `typing` `read` — presence and receipts
-- [x] `rooms` `join` `leave` `invite` `whoami` — room management
-- [x] `history` — read back from SQLite
-- [x] `poll` / `endpoll` — MSC3381, unstable namespace
-- [x] `poll-results` — reads votes back and tallies them
+## Matrix work still open, none of it blocking
 
-## Phase 5 — skills (this pass)
+- [ ] **Timeline gaps.** The server truncates long batches, so events are silently
+      missed. Backfill from `prev_batch`. Only bites a busy, long-running bot.
+- [ ] **SAS verification.** momo cannot be verified as a *user* by another account.
+      Cosmetic: the workaround is leaving "never send to unverified sessions" off.
+- [ ] **Re-verify other sessions** on the bot account after the cross-signing reset.
+- [ ] **Delete stale devices.** Not scriptable on matrix.org — `DELETE /devices/{id}`
+      returns `M_UNRECOGNIZED` because MAS owns device management. Browser only.
 
-- [x] `matrix-cli` — driving momo from Claude Code
-- [x] `matrix-events` — the event model: threads, edits, reactions, redactions
-- [x] `matrix-e2ee` — crypto operations, recovery, the failure modes
-- [x] `momo-dev` — repo architecture
-
-## Phase 6 — the actual point (next)
-
-The Matrix side is a means to an end. None of this is built yet.
-
-- [ ] **Session continuity.** Map a thread to a Claude Code session id and pass
-      `--resume`. Without it every message starts a fresh agent, which is what makes
-      momo feel like a mailbox instead of a conversation. Highest value item left.
-- [ ] **Stream via edits.** Send a placeholder, then `m.replace` as output arrives.
-      Debounce to ~1/sec or the server throttles and it reads worse than no streaming.
-- [ ] **Approval gates.** The plumbing is in place: momo records poll starts, votes
-      and closes, and `core.Tally` counts them per MSC3381. What is missing is an
-      engine that *waits* on a result before acting.
-- [ ] **Bind rooms to working directories** so a session cannot wander the filesystem.
-- [ ] **Redact secrets** from engine output before it reaches room history.
-- [ ] **Cap concurrent sessions.** One runaway loop should not spawn twenty agents.
-
-## Phase 7 — operations
+## Operations
 
 - [ ] launchd plist so momo survives reboot (SIGTERM, not SIGKILL — it checkpoints)
 - [ ] Log to file with rotation
 - [ ] Notice when the sync loop dies; a silent bot looks identical to an idle one
-- [ ] Handle timeline gaps — backfill from `prev_batch` when the server truncates
+- [ ] Restore-test for real: delete `momo.db`, log in fresh, `momo restore`
 
 ## Recovering from a lost crypto store
 
@@ -101,15 +94,22 @@ momo rebuilds from nothing:
 
 Each rebuild leaves a dead device on the account; clean those up in your client.
 
-- [ ] Restore-test this for real once. Every step is exercised, but never against an
-      actually empty store.
-
 ## Known limits
 
 - **Polls are unstable.** MSC3381 has no stable room version, so momo uses the
   `org.matrix.msc3381.poll.*` namespace. Element understands it today; that is not a
   promise about tomorrow.
-- **No SAS verification.** momo cannot be verified as a *user* by another account, so
-  "Never send encrypted messages to unverified sessions" must stay off in your client.
+- **Poll votes are only seen live.** Responses are encrypted and arrive over sync, so
+  a vote cast while the daemon was down cannot be recovered afterwards.
 - **matrix.org is not fully scriptable.** It runs MAS, so device deletion and
   cross-signing resets require a browser. Plain Synapse does not.
+
+## Resolved, recorded so it is not re-litigated
+
+**momo can read its own sent messages.** This was believed broken: a decrypt failure
+on one of momo's own messages looked like a missing inbound copy of the outbound
+megolm session. mautrix creates that copy at send time in `encryptmegolm.go` via
+`createGroupSession` — a level of indirection a grep for `PutGroupSession` misses.
+The original failure was caused by deleting the crypto store. Confirmed by
+experiment: with the retain code removed, a freshly rotated outbound session still
+gets a matching inbound row with `key_source=direct`.

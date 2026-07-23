@@ -13,9 +13,12 @@ react, edit, poll, read history — without touching the protocol.
 
 ## Status
 
-End-to-end encryption works, including DMs, cross-signing and server-side room key
-backup. The CLI covers the common Matrix surface. What is *not* built yet is the part
-that makes it feel like a conversation — session continuity and streaming. See
+Working: end-to-end encryption including DMs, cross-signing, room key backup, the
+Matrix CLI, message history, polls with vote tallying, multiple bot profiles, and the
+agent engine — an incoming message spawns a Claude Code session that replies for
+itself through the CLI, resuming per thread.
+
+Not built: streaming output, approval gates, secret redaction. See
 [ROADMAP.md](ROADMAP.md).
 
 ## Requirements
@@ -67,6 +70,43 @@ Start it, then DM the bot from your own account:
 make run
 ```
 
+## Profiles
+
+A profile is a directory under `~/.momo` holding one bot's entire identity —
+credentials, crypto store, history, socket. Running two bots means two profiles and
+two daemons, sharing nothing.
+
+```
+~/.momo/momo/
+  config        # KEY=VALUE, same keys as .env
+  state.json    # access token, device id, pickle key
+  momo.db       # olm/megolm keys, room state, sync position
+  history.db    # message history
+  momo.sock     # daemon socket
+```
+
+```bash
+momo profiles                      # list them
+momo --profile work send ...       # act as a particular bot
+MOMO_PROFILE=work momo daemon      # same thing
+```
+
+Environment variables override the profile config, so `ENGINE=echo momo --profile work
+daemon` still works for a one-off. Without `--profile`, momo uses files in the working
+directory, which is what an install predating profiles looks like.
+
+## Running as a service (macOS)
+
+```bash
+make service PROFILE=momo     # writes a LaunchAgent plist; read it
+make service-load             # start it, and at every login
+make service-status
+make service-unload
+```
+
+launchd hands a process a minimal `PATH`, so set `CLAUDE_BIN` to an absolute path in
+the profile config or the agent will not be found.
+
 ## CLI
 
 ```
@@ -77,6 +117,11 @@ momo react|edit|redact <room> <event> ...
 momo poll <room> <question> <answer>...
 momo rooms|join|leave|invite|whoami
 momo history [--room ID] [--thread ID] [--limit N]
+momo clear <room>                start over: redact momo's messages, wipe local
+                                 history and agent sessions
+                                 [--local] wipe locally only
+                                 [--sessions-only] forget sessions, keep transcript
+momo profiles                    list configured bots
 momo crosssign|backup|restore [recovery key]
 momo reset-session               forget token+device, forcing a fresh login
 ```
@@ -100,9 +145,19 @@ cmd/momo/          composition root + CLI
 internal/core/     domain types and ports
 internal/matrix/   Matrix adapter — the only package that imports mautrix
 internal/store/    SQLite history
-internal/engine/   echo / Claude Code
+internal/engine/   echo / Claude Code — swap in another agent here
 internal/bot/      the rules: who gets answered, and how
+internal/config/   profile resolution
+internal/ipc/      unix socket so an agent session can act through the daemon
 ```
+
+### Why the socket exists
+
+The daemon owns an olm account. A second process cannot share it: both would load the
+same megolm ratchet, encrypt from the same index and save, so two messages go out
+under one message index — a silent cryptographic fault. So when an agent session runs
+`momo send`, the CLI forwards it to the daemon over a unix socket instead of opening
+the crypto store. With no daemon running it opens it directly, which is safe.
 
 Three files hold state, and they are not interchangeable:
 
@@ -131,7 +186,13 @@ always passes it.
   encrypted messages to unverified sessions" must stay off in your client.
 - **matrix.org is not fully scriptable.** It runs MAS, so device deletion and
   cross-signing resets need a browser. Plain Synapse does not.
-- **No session continuity yet.** Every message starts a fresh Claude Code run.
+- **`clear` cannot remove your messages.** Redacting someone else's event needs a
+  power level momo does not have in a DM you created. It redacts its own and wipes
+  what it stores; yours stay until you remove them in your client.
+- **The agent runs with `bypassPermissions` by default.** A headless session has
+  nobody to approve a prompt, so anything stricter means it refuses and never replies.
+  Narrow it with `ENGINE_ALLOWED_TOOLS`. The real fix is an approval gate in the chat,
+  which is on the roadmap.
 
 ## License
 

@@ -267,9 +267,46 @@ type History interface {
 	Close() error
 }
 
-// Engine turns a prompt into a reply. The bot does not care whether that is Claude
-// Code, an echo stub, or something else later.
+// Task is one request to an engine, with enough context that an agent can answer
+// for itself rather than handing text back to be posted.
+type Task struct {
+	Prompt string
+	RoomID string
+	// ThreadRoot is where the answer belongs. Always set: the bot opens a thread on
+	// the incoming message when the caller did not.
+	ThreadRoot string
+	Sender     string
+	// ResumeID continues a previous agent session, so a thread is one conversation
+	// rather than a series of strangers. Empty starts fresh.
+	ResumeID string
+	// Workdir bounds where the engine may operate.
+	Workdir string
+}
+
+// Answer is what an engine produced.
+type Answer struct {
+	// Reply is text for the bot to post. Empty when Handled is true.
+	Reply string
+	// Handled means the engine already answered in the room by itself — an agent
+	// with CLI access does this. The bot must not post Reply as well, or every
+	// message gets answered twice.
+	Handled bool
+	// SessionID identifies the agent session, to resume on the next message in this
+	// thread. Empty when the engine has no notion of a session.
+	SessionID string
+}
+
+// Engine answers a task. Claude Code is one implementation; a different agent, or a
+// plain echo stub, is another. The bot depends on this and nothing more, which is
+// what keeps a second backend from touching anything outside its own package.
 type Engine interface {
-	Run(ctx context.Context, prompt string) string
+	Run(ctx context.Context, t Task) (Answer, error)
 	Name() string
+}
+
+// Sessions maps a thread to the agent session that owns it, so a conversation
+// survives across messages and across restarts.
+type Sessions interface {
+	SessionFor(ctx context.Context, roomID, threadRoot string) (string, error)
+	SetSession(ctx context.Context, roomID, threadRoot, sessionID string) error
 }

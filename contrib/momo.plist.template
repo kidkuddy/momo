@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.github.kidkuddy.momo.__PROFILE__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__BINARY__</string>
+        <string>--profile</string>
+        <string>__PROFILE__</string>
+        <string>daemon</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- launchd gives a process a minimal PATH, so the agent binary cannot be found
+         by name. Set CLAUDE_BIN in the profile config to an absolute path. -->
+    <key>StandardOutPath</key>
+    <string>__DIR__/momo.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DIR__/momo.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>__DIR__</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

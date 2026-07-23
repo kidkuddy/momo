@@ -1,6 +1,6 @@
 // Package bot is the application layer: the rules that decide what momo does with
-// an incoming message. It depends only on the ports in core, so it can be driven by
-// a test double as easily as by a real homeserver.
+// an incoming message. It depends only on the ports in core, so a test double drives
+// it as easily as a real homeserver.
 package bot
 
 import (
@@ -14,20 +14,28 @@ import (
 // Deps are the collaborators the bot needs. Constructor injection rather than
 // package globals: the CLI wires a subset, the daemon wires all of it.
 type Deps struct {
-	Chat    core.Chat
-	Rooms   core.Rooms
-	History core.History
-	Engine  core.Engine
+	Chat     core.Chat
+	History  core.History
+	Engine   core.Engine
+	Sessions core.Sessions
 
 	// SelfID is momo's own user ID, so it never answers itself.
 	SelfID string
-	// Allowed is the only user momo obeys. This is the entire security model:
-	// it is the sole gate between a chat message and an engine run.
+	// Allowed is the only user momo obeys. This is the entire security model: the
+	// sole gate between a chat message and an engine run on this host.
 	Allowed string
 	// MaxBody caps one outgoing event; longer replies are split.
 	MaxBody int
 	// Chunk splits an over-long body on line boundaries.
 	Chunk func(string, int) []string
+	// Workdir bounds where an engine may operate.
+	Workdir string
+
+	// SentInThread counts messages momo has posted into a thread. An agent engine
+	// answers by calling the CLI, so this is how the bot tells "it already replied"
+	// from "it finished without saying anything" — there is no flag on the result
+	// that can be trusted for that.
+	SentInThread func(threadRoot string) int
 }
 
 type Bot struct{ d Deps }
@@ -35,6 +43,9 @@ type Bot struct{ d Deps }
 func New(d Deps) *Bot {
 	if d.MaxBody == 0 {
 		d.MaxBody = 32 << 10
+	}
+	if d.SentInThread == nil {
+		d.SentInThread = func(string) int { return 0 }
 	}
 	return &Bot{d: d}
 }
@@ -61,15 +72,19 @@ func (b *Bot) Record(ctx context.Context, m core.Message) {
 	}
 }
 
-// Handle answers one message: run the engine, then reply in the caller's thread.
+// Handle answers one message.
 //
 // Replies open a thread on the incoming event when there is not one already, so a
-// conversation with momo stays out of the main timeline.
+// conversation with momo stays out of the main timeline and each thread maps to one
+// agent session.
 func (b *Bot) Handle(ctx context.Context, m core.Message) {
 	root := m.ThreadRoot
 	if root == "" {
 		root = m.EventID
 	}
+
+	resume := b.resumeID(ctx, m.RoomID, root)
+	before := b.d.SentInThread(root)
 
 	if err := b.d.Chat.Typing(ctx, m.RoomID, true); err != nil {
 		log.Printf("typing: %v", err)
@@ -80,23 +95,79 @@ func (b *Bot) Handle(ctx context.Context, m core.Message) {
 		}
 	}()
 
-	out := b.d.Engine.Run(ctx, m.Body)
-	for _, chunk := range b.d.Chunk(out, b.d.MaxBody) {
-		eventID, err := b.d.Chat.Send(ctx, m.RoomID, chunk, core.SendOpts{ThreadRoot: root})
+	answer, err := b.d.Engine.Run(ctx, core.Task{
+		Prompt:     m.Body,
+		RoomID:     m.RoomID,
+		ThreadRoot: root,
+		Sender:     m.Sender,
+		ResumeID:   resume,
+		Workdir:    b.d.Workdir,
+	})
+	if err != nil {
+		log.Printf("engine: %v", err)
+		b.post(ctx, m.RoomID, root, "The session failed: "+err.Error())
+		return
+	}
+
+	// Save the session before posting: if sending fails, the conversation should
+	// still resume next time rather than start over.
+	b.saveSession(ctx, m.RoomID, root, answer.SessionID)
+
+	if b.d.SentInThread(root) > before {
+		// The agent already spoke for itself. Posting answer.Reply too would say
+		// everything twice.
+		return
+	}
+	reply := answer.Reply
+	if reply == "" {
+		// A session that ends silently is indistinguishable from a hang. Say so.
+		reply = "The session finished without replying."
+	}
+	b.post(ctx, m.RoomID, root, reply)
+}
+
+func (b *Bot) post(ctx context.Context, roomID, root, text string) {
+	chunks := []string{text}
+	if b.d.Chunk != nil {
+		chunks = b.d.Chunk(text, b.d.MaxBody)
+	}
+	for _, chunk := range chunks {
+		eventID, err := b.d.Chat.Send(ctx, roomID, chunk, core.SendOpts{ThreadRoot: root})
 		if err != nil {
 			log.Printf("send: %v", err)
 			return
 		}
-		// Record our own reply too: the protocol cannot give it back to us later,
-		// so this local copy is the only durable record of what momo said.
+		// Record our own reply too: the protocol will not hand it back to us in a
+		// queryable form, so this local copy is the durable record of what momo said.
 		b.Record(ctx, core.Message{
 			EventID:    eventID,
-			RoomID:     m.RoomID,
+			RoomID:     roomID,
 			Sender:     b.d.SelfID,
 			Timestamp:  time.Now(),
 			Kind:       core.KindText,
 			Body:       chunk,
 			ThreadRoot: root,
 		})
+	}
+}
+
+func (b *Bot) resumeID(ctx context.Context, roomID, root string) string {
+	if b.d.Sessions == nil {
+		return ""
+	}
+	id, err := b.d.Sessions.SessionFor(ctx, roomID, root)
+	if err != nil {
+		log.Printf("sessions: %v", err)
+		return ""
+	}
+	return id
+}
+
+func (b *Bot) saveSession(ctx context.Context, roomID, root, sessionID string) {
+	if b.d.Sessions == nil || sessionID == "" {
+		return
+	}
+	if err := b.d.Sessions.SetSession(ctx, roomID, root, sessionID); err != nil {
+		log.Printf("sessions: %v", err)
 	}
 }

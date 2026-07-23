@@ -36,3 +36,33 @@ clean:
 	rm -f $(BIN)
 
 .PHONY: build test vet fmt check run crosssign backup restore clean
+
+# ---- run as a background service (macOS) --------------------------------
+# PROFILE=<name> is required; the daemon runs under that profile's identity.
+PROFILE ?= momo
+PLIST   := $(HOME)/Library/LaunchAgents/com.github.kidkuddy.momo.$(PROFILE).plist
+
+# Renders the plist. Load it yourself with `make service-load` once you have
+# read it — it starts momo at every login.
+service: build
+	@mkdir -p $(HOME)/Library/LaunchAgents
+	@sed -e 's|__BINARY__|$(CURDIR)/$(BIN)|g' \
+	     -e 's|__PROFILE__|$(PROFILE)|g' \
+	     -e 's|__DIR__|$(HOME)/.momo/$(PROFILE)|g' \
+	     contrib/momo.plist.template > $(PLIST)
+	@echo "wrote $(PLIST)"
+	@echo "review it, then: make service-load"
+
+service-load:
+	launchctl bootstrap gui/$$(id -u) $(PLIST)
+	@echo "momo is running under launchd; logs at $(HOME)/.momo/$(PROFILE)/momo.log"
+
+service-unload:
+	launchctl bootout gui/$$(id -u)/com.github.kidkuddy.momo.$(PROFILE) 2>/dev/null || true
+	@echo "momo service stopped"
+
+service-status:
+	@launchctl print gui/$$(id -u)/com.github.kidkuddy.momo.$(PROFILE) 2>/dev/null \
+	  | grep -E "state|pid|last exit" || echo "not loaded"
+
+.PHONY: service service-load service-unload service-status

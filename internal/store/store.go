@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     answers  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes (poll_id);
+
+-- One agent session per thread, so a conversation survives restarts.
+CREATE TABLE IF NOT EXISTS engine_sessions (
+    room_id     TEXT NOT NULL,
+    thread_root TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (room_id, thread_root)
+);
 `
 
 // Open creates the database if needed and applies the schema.
@@ -303,4 +312,62 @@ func millis(t time.Time) int64 {
 		return 0
 	}
 	return t.UnixMilli()
+}
+
+// ---- agent sessions ----------------------------------------------------
+
+func (s *Store) SessionFor(ctx context.Context, roomID, threadRoot string) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT session_id FROM engine_sessions WHERE room_id = ? AND thread_root = ?`,
+		roomID, threadRoot).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil // no session yet is normal, not an error
+	}
+	return id, err
+}
+
+func (s *Store) SetSession(ctx context.Context, roomID, threadRoot, sessionID string) error {
+	_, err := s.db.ExecContext(ctx, `
+        INSERT INTO engine_sessions (room_id, thread_root, session_id, updated_at)
+        VALUES (?,?,?,?)
+        ON CONFLICT(room_id, thread_root) DO UPDATE SET
+            session_id = excluded.session_id, updated_at = excluded.updated_at`,
+		roomID, threadRoot, sessionID, time.Now().UnixMilli())
+	return err
+}
+
+// ---- clearing ----------------------------------------------------------
+
+// ClearRoom removes everything momo remembers about a room: messages, reactions,
+// polls, votes, and the agent session mappings.
+//
+// One transaction, because a half-cleared room is worse than either state — the
+// agent would resume a conversation whose messages are gone.
+func (s *Store) ClearRoom(ctx context.Context, roomID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range []string{
+		`DELETE FROM poll_votes WHERE room_id = ?`,
+		`DELETE FROM polls WHERE room_id = ?`,
+		`DELETE FROM reactions WHERE room_id = ?`,
+		`DELETE FROM messages WHERE room_id = ?`,
+		`DELETE FROM engine_sessions WHERE room_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt, roomID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ClearSessions forgets the agent sessions for a room without touching history, so
+// the next message starts a fresh conversation but the transcript survives.
+func (s *Store) ClearSessions(ctx context.Context, roomID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM engine_sessions WHERE room_id = ?`, roomID)
+	return err
 }

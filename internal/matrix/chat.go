@@ -149,16 +149,28 @@ func (ch *Chat) StartPoll(ctx context.Context, roomID string, poll core.Poll) (s
 	if max < 1 {
 		max = 1
 	}
-	content := &event.PollStartEventContent{
-		PollStart: event.PollStart{
-			Kind:          kind,
-			MaxSelections: max,
-			// The text field doubles as the fallback clients without poll support show.
-			Question: event.MSC1767Message{Text: fallbackPollText(poll)},
-			Answers:  answers,
+	content := pollStartContent{
+		PollStartEventContent: &event.PollStartEventContent{
+			PollStart: event.PollStart{
+				Kind:          kind,
+				MaxSelections: max,
+				Question:      event.MSC1767Message{Text: poll.Question},
+				Answers:       answers,
+			},
 		},
+		Text: fallbackPollText(poll),
 	}
 	return ch.send(ctx, roomID, event.EventUnstablePollStart, content)
+}
+
+// pollStartContent adds the top-level fallback text MSC3381 asks for, which
+// mautrix's struct has no field for. It must sit beside the poll object, not inside
+// the question: a client that understands polls renders the question, and one that
+// does not falls back to this. Putting the fallback in the question makes every
+// client repeat the answers inside the question text.
+type pollStartContent struct {
+	*event.PollStartEventContent
+	Text string `json:"org.matrix.msc1767.text,omitempty"`
 }
 
 // EndPoll closes a poll. mautrix has no struct for the end event, so this is the

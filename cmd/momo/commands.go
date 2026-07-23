@@ -37,6 +37,8 @@ func (a *app) runCommand(ctx context.Context, cmd string, args []string) (string
 		return a.listThreads(ctx, args)
 	case "nudge":
 		return a.nudgeThreads(ctx, args)
+	case "schedule", "remind":
+		return a.scheduleCommand(ctx, args)
 	case "crosssign":
 		return a.crossSign(ctx, strings.Join(args, " "))
 	case "backup":

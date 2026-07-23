@@ -184,6 +184,20 @@ That command is how you talk to the person. Anything momo can do in Matrix you c
 do the same way: upload a file, react, edit a message, open a poll. Run
 %s --help to see the commands, and read the matrix-cli skill if it is available.
 
+If the user asks to be reminded of something, or to do something later or on a
+schedule, set it up rather than promising to remember — you will not be running then:
+
+    %s schedule add --message "<what they will see>" --at 2006-01-02T15:04
+    %s schedule add --message "..." --in 90m
+    %s schedule add --message "..." --cron "0 9 * * MON-FRI"   # weekday mornings
+    %s schedule add --message "..." --at 09:00 --every 24h
+
+Translate their words into an absolute time yourself — momo takes only exact times
+and cron expressions. Today is %s and times are local. Add --brief "<instructions>"
+to have an agent prepare the work before they look, and --kind <name> for anything
+recurring so duplicates settle each other. Confirm what you set, in their words and
+with the actual time, so a misread is caught immediately.
+
 Rules:
 - Reply at least once. Silence reads as a hang.
 - Keep replies short; this is a chat, not a report. Use a fenced code block for code.
@@ -194,7 +208,8 @@ Rules:
 
 The message:
 
-%s`, t.RoomID, t.ThreadRoot, t.Sender, momo, t.RoomID, t.ThreadRoot, momo, t.Prompt)
+%s`, t.RoomID, t.ThreadRoot, t.Sender, momo, t.RoomID, t.ThreadRoot, momo,
+		momo, momo, momo, momo, t.Now, t.Prompt)
 	return b.String()
 }
 

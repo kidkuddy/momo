@@ -97,6 +97,24 @@ CREATE TABLE IF NOT EXISTS threads (
     PRIMARY KEY (room_id, thread_root)
 );
 CREATE INDEX IF NOT EXISTS idx_threads_open ON threads (kind, state);
+
+-- Reminders the user asked for in chat. They live here rather than in an agent
+-- session because a session is a short-lived process: it cannot hold a timer.
+CREATE TABLE IF NOT EXISTS schedules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL DEFAULT '',
+    message    TEXT NOT NULL,
+    brief      TEXT NOT NULL DEFAULT '',
+    next_at    INTEGER NOT NULL,
+    every_ms   INTEGER NOT NULL DEFAULT 0,
+    cron       TEXT NOT NULL DEFAULT '',
+    wip        INTEGER NOT NULL DEFAULT 0,
+    state      TEXT NOT NULL DEFAULT 'active',
+    last_fired INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules (state, next_at);
 `
 
 // migrations bring an existing database up to the current schema. CREATE TABLE IF
@@ -559,4 +577,87 @@ func (s *Store) SetThreadState(ctx context.Context, roomID, threadRoot string, s
 		}
 	}
 	return closed, tx.Commit()
+}
+
+// ---- schedules ---------------------------------------------------------
+
+func (s *Store) AddSchedule(ctx context.Context, sc core.Schedule) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+        INSERT INTO schedules (room_id, kind, message, brief, next_at, every_ms, cron, wip, state, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		sc.RoomID, sc.Kind, sc.Message, sc.Brief, sc.NextAt.UnixMilli(),
+		sc.Every.Milliseconds(), sc.Cron, sc.WIP, string(core.ScheduleActive), time.Now().UnixMilli())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// DueSchedules returns what should fire now. Overdue entries come back too: a daemon
+// that was down must still deliver, late, rather than silently skip.
+func (s *Store) DueSchedules(ctx context.Context, now time.Time) ([]core.Schedule, error) {
+	return s.querySchedules(ctx,
+		`WHERE state = 'active' AND next_at <= ? ORDER BY next_at`, now.UnixMilli())
+}
+
+func (s *Store) ListSchedules(ctx context.Context) ([]core.Schedule, error) {
+	return s.querySchedules(ctx, `WHERE state = 'active' ORDER BY next_at`)
+}
+
+func (s *Store) querySchedules(ctx context.Context, where string, args ...any) ([]core.Schedule, error) {
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT id, room_id, kind, message, brief, next_at, every_ms, cron, wip, state,
+               last_fired, created_at FROM schedules `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []core.Schedule
+	for rows.Next() {
+		var sc core.Schedule
+		var next, every, fired, created int64
+		var state string
+		if err := rows.Scan(&sc.ID, &sc.RoomID, &sc.Kind, &sc.Message, &sc.Brief,
+			&next, &every, &sc.Cron, &sc.WIP, &state, &fired, &created); err != nil {
+			return nil, err
+		}
+		sc.NextAt = time.UnixMilli(next)
+		sc.Every = time.Duration(every) * time.Millisecond
+		sc.State = core.ScheduleState(state)
+		sc.CreatedAt = time.UnixMilli(created)
+		if fired != 0 {
+			sc.LastFired = time.UnixMilli(fired)
+		}
+		out = append(out, sc)
+	}
+	return out, rows.Err()
+}
+
+// AdvanceSchedule records a firing. A zero next time closes a one-shot, which is
+// what stops it firing forever.
+func (s *Store) AdvanceSchedule(ctx context.Context, id int64, firedAt, next time.Time) error {
+	if next.IsZero() {
+		_, err := s.db.ExecContext(ctx,
+			`UPDATE schedules SET state = ?, last_fired = ? WHERE id = ?`,
+			string(core.ScheduleDone), firedAt.UnixMilli(), id)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE schedules SET next_at = ?, last_fired = ? WHERE id = ?`,
+		next.UnixMilli(), firedAt.UnixMilli(), id)
+	return err
+}
+
+func (s *Store) CancelSchedule(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE schedules SET state = ? WHERE id = ? AND state = 'active'`,
+		string(core.ScheduleCancelled), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return core.ErrNotFound
+	}
+	return nil
 }

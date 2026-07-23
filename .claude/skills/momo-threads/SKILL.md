@@ -156,6 +156,41 @@ expands — `"$abc"` silently becomes empty.
 - **Resolution tracks the user's work, not yours.**
 - Skipping on a WIP limit is a normal outcome. Report it plainly and stop.
 
+## Reminders
+
+A reminder opens a thread when it comes due, with the work prepared, exactly as
+`momo start` does. It lives in the database rather than in an agent session, because
+a session is a short-lived process and cannot hold a timer.
+
+```bash
+momo schedule add --message "pay the invoice" --at 2026-07-24T09:00
+momo schedule add --message "stand up"        --in 90m
+momo schedule add --message "inbox time"      --cron "0 9,17 * * *" --kind inbox --wip 2
+momo schedule add --message "weekly plan"     --cron "0 10 * * MON" --kind weekly \
+  --brief-file /path/to/plan-brief.md
+momo schedule list
+momo schedule rm <id>
+```
+
+**momo takes only exact times and cron expressions.** Reading "tomorrow after lunch"
+is your job — you know today's date and the user's timezone, and you are far better at
+it than a parser would be. Translate, then confirm what you set using the real time so
+a misread is caught immediately.
+
+| Flag | Effect |
+|---|---|
+| `--at T` | first fire. `2006-01-02T15:04`, `15:04` (rolls to tomorrow if past), or RFC3339 |
+| `--in D` | first fire, relative: `90m`, `2h` |
+| `--cron E` | five-field expression or `@daily`. Sets both first fire and repeat |
+| `--every D` | repeat at a fixed interval after the first fire |
+| `--message`, `--brief`/`--brief-file`, `--kind`, `--wip`, `--room` | as for `momo start` |
+
+Without `--every` or `--cron` it fires once and closes itself.
+
+A bad cron expression is rejected when the reminder is created rather than silently
+never firing. **Missed occurrences are skipped, not replayed** — a daily reminder that
+was down for three days fires once, today, not three times.
+
 ## Conversations the user starts
 
 A root message from the user opens a tracked thread too: momo pins it and records it,

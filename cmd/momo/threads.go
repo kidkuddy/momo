@@ -124,6 +124,7 @@ func (a *app) runBrief(ctx context.Context, roomID, threadRoot, brief string) {
 		RoomID:     roomID,
 		ThreadRoot: threadRoot,
 		Workdir:    workdir(),
+		Now:        time.Now().Format("Monday 2 January 2006, 15:04 MST"),
 	})
 	if err != nil {
 		_, _ = a.chat.Send(ctx, roomID, "Could not prepare this: "+err.Error(),

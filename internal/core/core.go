@@ -283,6 +283,9 @@ type Task struct {
 	ResumeID string
 	// Workdir bounds where the engine may operate.
 	Workdir string
+	// Now is the current local time, formatted for a human. An agent cannot work out
+	// "tomorrow at nine" without knowing what today is.
+	Now string
 }
 
 // Answer is what an engine produced.
@@ -350,6 +353,51 @@ type Threads interface {
 	// reminders about it, it does not leave them outstanding.
 	SetThreadState(ctx context.Context, roomID, threadRoot string, state ThreadState, sameKind bool) (int, error)
 	MarkNudged(ctx context.Context, roomID, threadRoot string, at time.Time) error
+}
+
+// Schedule is a reminder that opens a thread when it comes due.
+//
+// It exists so the user can say "remind me to X at Y" in chat and have it survive
+// restarts, rather than depending on an agent session staying alive — which it does
+// not, since each reply is a separate short-lived process.
+type Schedule struct {
+	ID     int64
+	RoomID string
+	Kind   string
+	// Message is the ping; Brief is what the agent prepares before the user looks.
+	Message string
+	Brief   string
+	NextAt  time.Time
+	// Every repeats at a fixed interval. Cron repeats on a calendar expression.
+	// Both empty means it fires once and is done.
+	Every time.Duration
+	Cron  string
+	WIP   int
+	State ScheduleState
+	// LastFired is zero until it has run at least once.
+	LastFired time.Time
+	CreatedAt time.Time
+}
+
+type ScheduleState string
+
+const (
+	ScheduleActive ScheduleState = "active"
+	// ScheduleDone is a one-shot that has fired.
+	ScheduleDone      ScheduleState = "done"
+	ScheduleCancelled ScheduleState = "cancelled"
+)
+
+func (s Schedule) Recurring() bool { return s.Every > 0 || s.Cron != "" }
+
+// Schedules is the store of pending reminders.
+type Schedules interface {
+	AddSchedule(ctx context.Context, s Schedule) (int64, error)
+	DueSchedules(ctx context.Context, now time.Time) ([]Schedule, error)
+	ListSchedules(ctx context.Context) ([]Schedule, error)
+	// AdvanceSchedule records a firing and sets the next time, or closes a one-shot.
+	AdvanceSchedule(ctx context.Context, id int64, firedAt time.Time, next time.Time) error
+	CancelSchedule(ctx context.Context, id int64) error
 }
 
 // Sessions maps a thread to the agent session that owns it, so a conversation

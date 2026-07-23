@@ -46,6 +46,12 @@ const usage = `momo — Matrix bot and CLI
                                        (or just react ✅ on the thread in your client)
   momo nudge                           push on threads still open [--older-than 12h]
                                        [--kind K] [--min-interval 20h] [--dry-run]
+  momo schedule add --message <ping>   a reminder that opens a thread when it fires
+                                       when: --at <time> | --in <dur> | --cron <expr>
+                                       repeat: --every <dur> | --cron <expr>
+                                       [--brief T|--brief-file P] [--kind K] [--wip N]
+  momo schedule list
+  momo schedule rm <id>
   momo rooms                           list joined rooms
   momo join <room|alias>
   momo leave <room>
@@ -78,6 +84,7 @@ var forwardable = map[string]bool{
 	"poll-results": true, "rooms": true, "join": true, "leave": true,
 	"invite": true, "whoami": true, "history": true, "clear": true,
 	"start": true, "resolve": true, "threads": true, "nudge": true,
+	"schedule": true, "remind": true,
 }
 
 func main() {

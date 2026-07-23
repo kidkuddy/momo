@@ -54,6 +54,10 @@ func (a *app) daemon(ctx context.Context, ln net.Listener) error {
 		}
 	}()
 
+	// Reminders live in the database, not in an agent session — a session is a
+	// short-lived process and cannot hold a timer.
+	go a.runSchedules(ctx)
+
 	a.startBackup(ctx)
 	a.reportDecryptFailures()
 

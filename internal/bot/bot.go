@@ -116,6 +116,7 @@ func (b *Bot) Handle(ctx context.Context, m core.Message) {
 		Sender:     m.Sender,
 		ResumeID:   resume,
 		Workdir:    b.d.Workdir,
+		Now:        time.Now().Format("Monday 2 January 2006, 15:04 MST"),
 	})
 	if err != nil {
 		log.Printf("engine: %v", err)

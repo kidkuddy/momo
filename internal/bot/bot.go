@@ -111,6 +111,16 @@ func (b *Bot) Handle(ctx context.Context, m core.Message) {
 	})
 	if err != nil {
 		log.Printf("engine: %v", err)
+		// A shutdown kills the engine mid-run. The sync position has already moved
+		// past this message, so it is never retried — without a word here the user
+		// sees silence and cannot tell it from a hang. The parent context is already
+		// cancelled, so this notice needs its own.
+		if ctx.Err() != nil {
+			notice, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			b.post(notice, m.RoomID, root, "I was restarted while working on that — send it again.")
+			return
+		}
 		b.post(ctx, m.RoomID, root, "The session failed: "+err.Error())
 		return
 	}

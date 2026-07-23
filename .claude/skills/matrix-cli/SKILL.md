@@ -134,6 +134,13 @@ momo profiles
 momo --profile work rooms
 ```
 
+## Scheduled work
+
+Opening a pinned piece of work, pushing on what has stalled, and closing it out live
+in the `momo-threads` skill: `momo start`, `momo threads`, `momo nudge`,
+`momo resolve`. Reach for that skill when something should *raise* work with the user
+rather than answer them.
+
 ## Rooms
 
 ```bash
@@ -161,6 +168,9 @@ even though the room has messages.
 
 ## When something fails
 
+- **`no HOMESERVER set`** — no profile selected. Pass `--profile <name>`, or run
+  `momo profiles` to see what exists. This is the most common failure from a cron or
+  workflow, where no shell has sourced any config.
 - **`error: ... M_FORBIDDEN`** — the account is not in that room, or lacks the power
   level for the action.
 - **A send appears to work but nobody sees it** — check `momo rooms` shows the room

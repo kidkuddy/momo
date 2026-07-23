@@ -33,6 +33,12 @@ func (a *app) nudgeThreads(ctx context.Context, args []string) (string, error) {
 	var b strings.Builder
 	nudged := 0
 	for _, t := range threads {
+		// A kind marks a ritual momo is responsible for chasing. A thread without
+		// one is a conversation the user opened; pinned so it is findable, but
+		// nagging about a question they asked once would be obnoxious.
+		if t.Kind == "" && f.get("kind") == "" {
+			continue
+		}
 		age := time.Since(t.CreatedAt)
 		if age < older {
 			continue

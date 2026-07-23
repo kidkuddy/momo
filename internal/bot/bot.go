@@ -18,6 +18,7 @@ type Deps struct {
 	History  core.History
 	Engine   core.Engine
 	Sessions core.Sessions
+	Threads  core.Threads
 
 	// SelfID is momo's own user ID, so it never answers itself.
 	SelfID string
@@ -30,6 +31,10 @@ type Deps struct {
 	Chunk func(string, int) []string
 	// Workdir bounds where an engine may operate.
 	Workdir string
+
+	// Pin marks a thread root so outstanding conversations are one tap away.
+	// Optional: pinning needs a power level momo may not have in a group room.
+	Pin func(ctx context.Context, roomID, eventID string) error
 
 	// SessionIdle ends an agent session that has been untouched this long. Zero
 	// keeps sessions forever. This is a cost control, not a memory one: `claude -p`
@@ -92,14 +97,17 @@ func (b *Bot) Handle(ctx context.Context, m core.Message) {
 	resume := b.resumeID(ctx, m.RoomID, root)
 	before := b.d.SentInThread(root)
 
-	if err := b.d.Chat.Typing(ctx, m.RoomID, true); err != nil {
-		log.Printf("typing: %v", err)
-	}
-	defer func() {
-		if err := b.d.Chat.Typing(ctx, m.RoomID, false); err != nil {
-			log.Printf("typing: %v", err)
-		}
-	}()
+	// Acknowledge immediately. A typing indicator is not enough on its own: the
+	// server expires it, it is not attached to any particular message, and phone
+	// clients show it inconsistently. A reaction lands instantly, sticks, and says
+	// "this one, I have it".
+	ack := b.ack(ctx, m)
+	defer b.keepTyping(ctx, m.RoomID, typingNotice)()
+
+	// A conversation the user opened is outstanding work too, so track and pin it
+	// the same way a scheduled thread is. Without a kind it is a conversation
+	// rather than a ritual, which is what keeps the nudge sweep off it.
+	b.trackThread(ctx, m, root)
 
 	answer, err := b.d.Engine.Run(ctx, core.Task{
 		Prompt:     m.Body,
@@ -128,6 +136,7 @@ func (b *Bot) Handle(ctx context.Context, m core.Message) {
 	// Save the session before posting: if sending fails, the conversation should
 	// still resume next time rather than start over.
 	b.saveSession(ctx, m.RoomID, root, answer.SessionID)
+	ack()
 
 	if b.d.SentInThread(root) > before {
 		// The agent already spoke for itself. Posting answer.Reply too would say
@@ -140,6 +149,98 @@ func (b *Bot) Handle(ctx context.Context, m core.Message) {
 		reply = "The session finished without replying."
 	}
 	b.post(ctx, m.RoomID, root, reply)
+}
+
+// keepTyping holds the typing indicator up for as long as the engine runs, and
+// returns the function that clears it.
+//
+// The server expires a typing notice after the timeout it was given, so setting it
+// once means it vanishes ~30s in while a run that takes minutes carries on. To the
+// user that is indistinguishable from a dead bot — which is the single most common
+// reason to think momo has broken when it has not.
+const typingNotice = 30 * time.Second
+
+func (b *Bot) keepTyping(ctx context.Context, roomID string, notice time.Duration) func() {
+	send := func(on bool) {
+		if err := b.d.Chat.Typing(ctx, roomID, on); err != nil {
+			log.Printf("typing: %v", err)
+		}
+	}
+	send(true)
+
+	done := make(chan struct{})
+	go func() {
+		// Comfortably inside the expiry, so there is no gap where the indicator
+		// lapses between refreshes.
+		t := time.NewTicker(notice * 2 / 3)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				send(true)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		// A cancelled context cannot clear the indicator, and leaving it set makes
+		// momo look busy forever. Use a fresh one for the last call.
+		if ctx.Err() != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+		}
+		send(false)
+	}
+}
+
+// ack puts 👀 on the message and returns the function that clears it, so the mark
+// means "working on this" rather than "seen at some point".
+//
+// A crash leaves it in place, which is the right failure: a stuck 👀 is a visible
+// sign that something died mid-reply.
+func (b *Bot) ack(ctx context.Context, m core.Message) func() {
+	id, err := b.d.Chat.React(ctx, m.RoomID, m.EventID, "👀")
+	if err != nil {
+		log.Printf("ack: %v", err)
+		return func() {}
+	}
+	return func() {
+		if _, err := b.d.Chat.Redact(ctx, m.RoomID, id, ""); err != nil {
+			log.Printf("ack clear: %v", err)
+		}
+	}
+}
+
+// trackThread records a user-opened conversation as an outstanding thread and pins
+// it. Only the root message opens one — later messages belong to a thread that
+// already exists.
+func (b *Bot) trackThread(ctx context.Context, m core.Message, root string) {
+	if b.d.Threads == nil || m.ThreadRoot != "" {
+		return
+	}
+	if _, err := b.d.Threads.Thread(ctx, m.RoomID, root); err == nil {
+		return // already tracked
+	}
+	if err := b.d.Threads.CreateThread(ctx, core.Thread{
+		RoomID:     m.RoomID,
+		ThreadRoot: root,
+		Brief:      m.Body,
+		State:      core.ThreadOpen,
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		log.Printf("thread: %v", err)
+		return
+	}
+	if b.d.Pin != nil {
+		if err := b.d.Pin(ctx, m.RoomID, root); err != nil {
+			log.Printf("pin: %v", err) // cosmetic; needs a power level momo may lack
+		}
+	}
 }
 
 func (b *Bot) post(ctx context.Context, roomID, root, text string) {

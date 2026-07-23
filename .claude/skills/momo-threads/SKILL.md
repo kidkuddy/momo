@@ -144,6 +144,15 @@ expands — `"$abc"` silently becomes empty.
 - **Resolution tracks the user's work, not yours.**
 - Skipping on a WIP limit is a normal outcome. Report it plainly and stop.
 
+## Conversations the user starts
+
+A root message from the user opens a tracked thread too: momo pins it and records it,
+so it appears in `momo threads` and is closed the same way — a ✅ on the root.
+
+Those threads have **no kind**, which is what keeps `momo nudge` off them. A kind
+marks a ritual momo is responsible for chasing; a question the user asked once is
+pinned so it is findable, not nagged about.
+
 ## When something looks wrong
 
 - **`no HOMESERVER set`** — no profile selected. Pass `--profile <name>`; `momo
@@ -153,5 +162,8 @@ expands — `"$abc"` silently becomes empty.
 - **"I was restarted while working on that"** — the daemon was restarted mid-run. The
   sync position has already moved past the message, so it is not retried; the user
   needs to send it again.
+- **👀 on a message that never got an answer** — the mark is added when momo picks a
+  message up and cleared when it replies, so a stuck 👀 means the run died mid-reply.
+  The daemon log says why.
 - **Nothing at all after a message** — check the daemon is up:
   `launchctl print gui/$(id -u)/com.github.kidkuddy.momo.<profile>`.

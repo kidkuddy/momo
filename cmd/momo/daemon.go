@@ -37,11 +37,13 @@ func (a *app) daemon(ctx context.Context, ln net.Listener) error {
 		History:      a.history,
 		Engine:       eng,
 		Sessions:     a.history,
+		Threads:      a.history,
 		SelfID:       self,
 		Allowed:      a.allowed,
 		MaxBody:      matrix.MaxBody,
 		Chunk:        matrix.Chunk,
 		Workdir:      workdir(),
+		Pin:          a.mx.Pin,
 		SessionIdle:  sessionIdle(),
 		SentInThread: a.sends.count,
 	})

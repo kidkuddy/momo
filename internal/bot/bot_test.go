@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,10 +67,9 @@ func TestHandleRepliesInThread(t *testing.T) {
 		if got := chat.sent[0].opts.ThreadRoot; got != c.wantThread {
 			t.Errorf("%s: thread root %q, want %q", c.name, got, c.wantThread)
 		}
-		// Typing must be turned off again even on the happy path, or the indicator
-		// sticks until it times out.
-		if chat.typing != 0 {
-			t.Errorf("%s: typing left on (balance %d)", c.name, chat.typing)
+		// Typing must be cleared on the happy path, or the indicator sticks.
+		if chat.typingLast {
+			t.Errorf("%s: typing left on", c.name)
 		}
 	}
 }
@@ -103,19 +103,26 @@ type sent struct {
 }
 
 type fakeChat struct {
-	sent   []sent
-	typing int // incremented on, decremented off; must balance to zero
+	mu         sync.Mutex
+	sent       []sent
+	typingOn   int  // how many times it was switched on, to see refreshes
+	typingLast bool // the most recent state; must end false or momo looks busy forever
+	reactions  []string
+	redacted   int
 }
 
 func (f *fakeChat) Send(_ context.Context, roomID, body string, opts core.SendOpts) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sent = append(f.sent, sent{roomID, body, opts})
 	return "$sent", nil
 }
 func (f *fakeChat) Typing(_ context.Context, _ string, typing bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.typingLast = typing
 	if typing {
-		f.typing++
-	} else {
-		f.typing--
+		f.typingOn++
 	}
 	return nil
 }
@@ -123,14 +130,24 @@ func (f *fakeChat) Typing(_ context.Context, _ string, typing bool) error {
 func (f *fakeChat) SendMedia(context.Context, string, string, core.SendOpts) (string, error) {
 	return "", nil
 }
-func (f *fakeChat) React(context.Context, string, string, string) (string, error) { return "", nil }
+func (f *fakeChat) React(_ context.Context, _, _, key string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reactions = append(f.reactions, key)
+	return "$reaction", nil
+}
 func (f *fakeChat) Edit(context.Context, string, string, string, core.SendOpts) (string, error) {
 	return "", nil
 }
-func (f *fakeChat) Redact(context.Context, string, string, string) (string, error) { return "", nil }
-func (f *fakeChat) MarkRead(context.Context, string, string) error                 { return nil }
-func (f *fakeChat) StartPoll(context.Context, string, core.Poll) (string, error)   { return "", nil }
-func (f *fakeChat) EndPoll(context.Context, string, string) (string, error)        { return "", nil }
+func (f *fakeChat) Redact(context.Context, string, string, string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.redacted++
+	return "$redaction", nil
+}
+func (f *fakeChat) MarkRead(context.Context, string, string) error               { return nil }
+func (f *fakeChat) StartPoll(context.Context, string, core.Poll) (string, error) { return "", nil }
+func (f *fakeChat) EndPoll(context.Context, string, string) (string, error)      { return "", nil }
 
 type fakeEngine struct {
 	reply string
@@ -273,3 +290,108 @@ func (r *replyingEngine) Run(ctx context.Context, t core.Task) (core.Answer, err
 	r.onRun()
 	return core.Answer{Reply: "this must not be posted", SessionID: "sess-1"}, nil
 }
+
+// A run lasting minutes must keep the typing indicator alive: the server expires it
+// after the timeout it was given, and a lapsed indicator is indistinguishable from a
+// dead bot. This is the most common reason to think momo has broken when it has not.
+func TestTypingIsRefreshedDuringLongRuns(t *testing.T) {
+	chat := &fakeChat{}
+	b := New(Deps{
+		Chat: chat, History: nopHistory{}, Engine: &fakeEngine{}, Sessions: newFakeSessions(),
+		SelfID: self, Allowed: allowed,
+		Chunk: func(s string, _ int) []string { return []string{s} },
+	})
+
+	// A short notice window so the test crosses several refreshes quickly.
+	stop := b.keepTyping(context.Background(), "!r", 60*time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
+	stop()
+
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	if chat.typingOn < 3 {
+		t.Errorf("typing set %d times, want at least 3 refreshes", chat.typingOn)
+	}
+	if chat.typingLast {
+		t.Error("typing left on — momo would look busy forever")
+	}
+}
+
+// A conversation the user opens is outstanding work: it should be tracked and pinned
+// so it is findable, but without a kind, because it is not a ritual momo chases.
+func TestRootMessageOpensAPinnedThread(t *testing.T) {
+	chat := &fakeChat{}
+	threads := newFakeThreads()
+	var pinned []string
+	b := New(Deps{
+		Chat: chat, History: nopHistory{}, Engine: &fakeEngine{}, Sessions: newFakeSessions(),
+		Threads: threads, SelfID: self, Allowed: allowed,
+		Chunk: func(s string, _ int) []string { return []string{s} },
+		Pin: func(_ context.Context, _, eventID string) error {
+			pinned = append(pinned, eventID)
+			return nil
+		},
+	})
+
+	b.Handle(context.Background(), core.Message{EventID: "$a", RoomID: "!r", Body: "a question"})
+	if len(threads.created) != 1 {
+		t.Fatalf("created %d threads, want 1", len(threads.created))
+	}
+	if got := threads.created[0].Kind; got != "" {
+		t.Errorf("kind = %q, want empty so the nudge sweep leaves it alone", got)
+	}
+	if len(pinned) != 1 || pinned[0] != "$a" {
+		t.Errorf("pinned %v, want [$a]", pinned)
+	}
+
+	// A follow-up inside the same thread must not open a second one.
+	b.Handle(context.Background(), core.Message{EventID: "$b", RoomID: "!r", Body: "more", ThreadRoot: "$a"})
+	if len(threads.created) != 1 {
+		t.Fatalf("a reply opened another thread: %d", len(threads.created))
+	}
+}
+
+// The user must see momo pick the message up immediately, and see the mark go away
+// when it is done — a permanent 👀 would mean nothing.
+func TestAckIsAddedAndCleared(t *testing.T) {
+	chat := &fakeChat{}
+	b := New(Deps{
+		Chat: chat, History: nopHistory{}, Engine: &fakeEngine{}, Sessions: newFakeSessions(),
+		Threads: newFakeThreads(), SelfID: self, Allowed: allowed,
+		Chunk: func(s string, _ int) []string { return []string{s} },
+	})
+	b.Handle(context.Background(), core.Message{EventID: "$a", RoomID: "!r", Body: "hi"})
+
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	if len(chat.reactions) != 1 || chat.reactions[0] != "👀" {
+		t.Fatalf("reactions = %v, want one 👀", chat.reactions)
+	}
+	if chat.redacted != 1 {
+		t.Errorf("ack redacted %d times, want 1", chat.redacted)
+	}
+}
+
+type fakeThreads struct{ created []core.Thread }
+
+func newFakeThreads() *fakeThreads { return &fakeThreads{} }
+
+func (f *fakeThreads) CreateThread(_ context.Context, t core.Thread) error {
+	f.created = append(f.created, t)
+	return nil
+}
+func (f *fakeThreads) Thread(_ context.Context, room, root string) (core.Thread, error) {
+	for _, t := range f.created {
+		if t.RoomID == room && t.ThreadRoot == root {
+			return t, nil
+		}
+	}
+	return core.Thread{}, core.ErrNotFound
+}
+func (f *fakeThreads) OpenThreads(context.Context, string, string) ([]core.Thread, error) {
+	return f.created, nil
+}
+func (f *fakeThreads) SetThreadState(context.Context, string, string, core.ThreadState, bool) (int, error) {
+	return 0, nil
+}
+func (f *fakeThreads) MarkNudged(context.Context, string, string, time.Time) error { return nil }

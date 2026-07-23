@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/kidkuddy/momo/internal/bot"
 	"github.com/kidkuddy/momo/internal/core"
@@ -55,6 +56,25 @@ func (a *app) daemon(ctx context.Context) error {
 		},
 		OnRedact: func(ctx context.Context, roomID, targetID string) {
 			if err := a.history.MarkRedacted(ctx, roomID, targetID); err != nil {
+				log.Printf("history: %v", err)
+			}
+		},
+		OnPoll: func(ctx context.Context, p core.PollRecord) {
+			if err := a.history.SavePoll(ctx, p); err != nil {
+				log.Printf("history: %v", err)
+				return
+			}
+			log.Printf("poll %s: %q", p.EventID, p.Question)
+		},
+		OnPollVote: func(ctx context.Context, v core.PollVote) {
+			if err := a.history.SavePollVote(ctx, v); err != nil {
+				log.Printf("history: %v", err)
+				return
+			}
+			log.Printf("%s voted in %s: %v", v.Sender, v.PollID, v.AnswerIDs)
+		},
+		OnPollEnd: func(ctx context.Context, roomID, pollID string, at time.Time) {
+			if err := a.history.ClosePoll(ctx, roomID, pollID, at); err != nil {
 				log.Printf("history: %v", err)
 			}
 		},

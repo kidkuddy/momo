@@ -56,7 +56,8 @@ skills rather than through bespoke glue.
 - [x] `typing` `read` — presence and receipts
 - [x] `rooms` `join` `leave` `invite` `whoami` — room management
 - [x] `history` — read back from SQLite
-- [x] `poll` — MSC3381, unstable namespace
+- [x] `poll` / `endpoll` — MSC3381, unstable namespace
+- [x] `poll-results` — reads votes back and tallies them
 
 ## Phase 5 — skills (this pass)
 
@@ -74,7 +75,9 @@ The Matrix side is a means to an end. None of this is built yet.
       momo feel like a mailbox instead of a conversation. Highest value item left.
 - [ ] **Stream via edits.** Send a placeholder, then `m.replace` as output arrives.
       Debounce to ~1/sec or the server throttles and it reads worse than no streaming.
-- [ ] **Reactions as controls.** 👍/👎 on a proposed action as an approval gate.
+- [ ] **Approval gates.** The plumbing is in place: momo records poll starts, votes
+      and closes, and `core.Tally` counts them per MSC3381. What is missing is an
+      engine that *waits* on a result before acting.
 - [ ] **Bind rooms to working directories** so a session cannot wander the filesystem.
 - [ ] **Redact secrets** from engine output before it reaches room history.
 - [ ] **Cap concurrent sessions.** One runaway loop should not spawn twenty agents.

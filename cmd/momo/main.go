@@ -32,6 +32,7 @@ const usage = `momo — Matrix bot and CLI
   momo read <room> <event>
   momo poll <room> <question> <answer>... [--multi N] [--disclosed]
   momo endpoll <room> <event>
+  momo poll-results <room> <event>     tally votes (needs the daemon to have seen them)
   momo rooms                           list joined rooms
   momo join <room|alias>
   momo leave <room>
@@ -78,6 +79,8 @@ func main() {
 		fail(app.roomCommand(ctx, cmd, rest))
 	case "history":
 		fail(app.showHistory(ctx, rest))
+	case "poll-results":
+		fail(app.pollResults(ctx, rest))
 	case "crosssign":
 		fail(app.crossSign(ctx, strings.Join(rest, " ")))
 	case "backup":

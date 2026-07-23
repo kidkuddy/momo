@@ -86,6 +86,26 @@ momo poll <room> "Which?" "a" "b" --multi 2 --disclosed
 momo endpoll <room> <poll event id>
 ```
 
+```bash
+momo poll-results <room> <poll event id>
+```
+
+prints each answer with its vote count and who voted:
+
+```
+Ship it?  (open, 2 voter(s))
+  yes                       2  @a:server @b:server
+  no                        0
+```
+
+Counting follows MSC3381: a voter's most recent vote replaces their earlier ones,
+votes cast after the poll closed do not count, and selections beyond
+`max_selections` are ignored.
+
+**Reading votes requires the daemon to have been running when they were cast.**
+Votes arrive over sync; there is no way to fetch them afterwards, because the poll
+response events are encrypted and momo only decrypts what it receives live.
+
 Polls use the unstable MSC3381 namespace. Element renders them today; that is not a
 guarantee for other clients or future versions.
 

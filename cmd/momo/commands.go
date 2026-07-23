@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -236,6 +237,37 @@ func (a *app) showHistory(ctx context.Context, args []string) error {
 			body = fmt.Sprintf("[%s] %s", m.Kind, m.Filename)
 		}
 		fmt.Printf("%s  %-28s %s\n", m.Timestamp.Format(time.RFC3339), m.Sender, body)
+	}
+	return nil
+}
+
+// pollResults prints a tally. Counting happens in core.Tally so the MSC3381 rules
+// live somewhere testable rather than inside a print loop.
+func (a *app) pollResults(ctx context.Context, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: momo poll-results <room> <poll event id>")
+	}
+	roomID, pollID := args[0], args[1]
+	poll, err := a.history.Poll(ctx, roomID, pollID)
+	if errors.Is(err, core.ErrNotFound) {
+		return fmt.Errorf("no poll %s recorded in %s — the daemon must be running to see polls", pollID, roomID)
+	}
+	if err != nil {
+		return err
+	}
+	votes, err := a.history.PollVotes(ctx, pollID)
+	if err != nil {
+		return err
+	}
+	t := core.Tally(poll, votes)
+
+	status := "open"
+	if !poll.Open() {
+		status = "closed " + poll.ClosedAt.Format(time.RFC3339)
+	}
+	fmt.Printf("%s  (%s, %d voter(s))\n", t.Poll.Question, status, t.Voters)
+	for _, c := range t.Counts {
+		fmt.Printf("  %-24s %2d  %s\n", c.Answer.Text, c.Votes, strings.Join(c.Voters, " "))
 	}
 	return nil
 }

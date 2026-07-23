@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/kidkuddy/momo/internal/core"
 )
@@ -147,6 +148,17 @@ func (nopHistory) Messages(context.Context, core.HistoryFilter) ([]core.Message,
 	return nil, nil
 }
 func (nopHistory) Reactions(context.Context, string, string) ([]core.Reaction, error) {
+	return nil, nil
+}
+func (nopHistory) SavePoll(context.Context, core.PollRecord) error   { return nil }
+func (nopHistory) SavePollVote(context.Context, core.PollVote) error { return nil }
+func (nopHistory) ClosePoll(context.Context, string, string, time.Time) error {
+	return nil
+}
+func (nopHistory) Poll(context.Context, string, string) (core.PollRecord, error) {
+	return core.PollRecord{}, nil
+}
+func (nopHistory) PollVotes(context.Context, string) ([]core.PollVote, error) {
 	return nil, nil
 }
 func (nopHistory) Close() error { return nil }

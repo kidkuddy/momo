@@ -88,6 +88,122 @@ type Poll struct {
 	Disclosed     bool // whether running totals are visible before the poll ends
 }
 
+// PollAnswer is one option, with the opaque ID votes actually reference.
+type PollAnswer struct {
+	ID   string
+	Text string
+}
+
+// PollRecord is a poll as observed in a room, which is more than we needed to send
+// one: tallying requires the answer IDs and the moment it closed.
+type PollRecord struct {
+	EventID       string
+	RoomID        string
+	Sender        string
+	Timestamp     time.Time
+	Question      string
+	Answers       []PollAnswer
+	MaxSelections int
+	// ClosedAt is zero while the poll is open. Votes after it do not count.
+	ClosedAt time.Time
+}
+
+func (p PollRecord) Open() bool { return p.ClosedAt.IsZero() }
+
+// PollVote is one person's answer. A voter may vote repeatedly; only their last
+// vote counts, so these are kept rather than overwritten.
+type PollVote struct {
+	EventID   string
+	PollID    string
+	RoomID    string
+	Sender    string
+	Timestamp time.Time
+	AnswerIDs []string
+}
+
+// PollCount is the result for a single answer.
+type PollCount struct {
+	Answer PollAnswer
+	Votes  int
+	Voters []string
+}
+
+// PollTally is a counted poll.
+type PollTally struct {
+	Poll   PollRecord
+	Counts []PollCount
+	Voters int // distinct people whose vote counted
+}
+
+// Tally counts a poll according to MSC3381: a voter's most recent valid vote
+// replaces their earlier ones, votes cast after the poll closed are discarded, and
+// selections beyond max_selections or naming unknown answers are ignored.
+//
+// Pure so the counting rules can be tested without a homeserver or a database.
+func Tally(p PollRecord, votes []PollVote) PollTally {
+	valid := map[string]PollAnswer{}
+	for _, a := range p.Answers {
+		valid[a.ID] = a
+	}
+
+	// Last vote per sender wins. Ties on timestamp fall back to event ID so the
+	// result is stable rather than dependent on scan order.
+	latest := map[string]PollVote{}
+	for _, v := range votes {
+		if !p.ClosedAt.IsZero() && v.Timestamp.After(p.ClosedAt) {
+			continue
+		}
+		prev, seen := latest[v.Sender]
+		if !seen || v.Timestamp.After(prev.Timestamp) ||
+			(v.Timestamp.Equal(prev.Timestamp) && v.EventID > prev.EventID) {
+			latest[v.Sender] = v
+		}
+	}
+
+	max := p.MaxSelections
+	if max < 1 {
+		max = 1
+	}
+	counted := map[string][]string{}
+	voters := 0
+	for sender, v := range latest {
+		picked := 0
+		did := false
+		for _, id := range v.AnswerIDs {
+			if picked >= max {
+				break
+			}
+			if _, ok := valid[id]; !ok {
+				continue
+			}
+			counted[id] = append(counted[id], sender)
+			picked++
+			did = true
+		}
+		if did {
+			voters++
+		}
+	}
+
+	// Preserve the poll's own answer order; a tally that reorders itself between
+	// runs is unreadable.
+	out := PollTally{Poll: p, Voters: voters}
+	for _, a := range p.Answers {
+		v := counted[a.ID]
+		sortStrings(v)
+		out.Counts = append(out.Counts, PollCount{Answer: a, Votes: len(v), Voters: v})
+	}
+	return out
+}
+
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
 // SendOpts are the modifiers common to every outgoing message.
 type SendOpts struct {
 	ThreadRoot string
@@ -141,6 +257,13 @@ type History interface {
 	MarkRedacted(ctx context.Context, roomID, eventID string) error
 	Messages(ctx context.Context, f HistoryFilter) ([]Message, error)
 	Reactions(ctx context.Context, roomID, targetID string) ([]Reaction, error)
+
+	SavePoll(ctx context.Context, p PollRecord) error
+	SavePollVote(ctx context.Context, v PollVote) error
+	ClosePoll(ctx context.Context, roomID, pollID string, at time.Time) error
+	Poll(ctx context.Context, roomID, pollID string) (PollRecord, error)
+	PollVotes(ctx context.Context, pollID string) ([]PollVote, error)
+
 	Close() error
 }
 

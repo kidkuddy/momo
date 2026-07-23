@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"maunium.net/go/mautrix"
@@ -16,6 +17,9 @@ type Handlers struct {
 	OnMessage  func(ctx context.Context, m core.Message)
 	OnReaction func(ctx context.Context, r core.Reaction)
 	OnRedact   func(ctx context.Context, roomID, targetID string)
+	OnPoll     func(ctx context.Context, p core.PollRecord)
+	OnPollVote func(ctx context.Context, v core.PollVote)
+	OnPollEnd  func(ctx context.Context, roomID, pollID string, at time.Time)
 	// ShouldJoin decides whether to accept an invite from this inviter.
 	ShouldJoin func(inviter string) bool
 	OnJoined   func(roomID string)
@@ -76,7 +80,74 @@ func (c *Client) Sync(ctx context.Context, h Handlers) error {
 		h.OnRedact(ctx, evt.RoomID.String(), evt.Redacts.String())
 	})
 
+	syncer.OnEventType(event.EventUnstablePollStart, func(ctx context.Context, evt *event.Event) {
+		if ctx.Value(mautrix.SyncTokenContextKey) == "" || h.OnPoll == nil {
+			return
+		}
+		content, ok := evt.Content.Parsed.(*event.PollStartEventContent)
+		if !ok {
+			return
+		}
+		answers := make([]core.PollAnswer, 0, len(content.PollStart.Answers))
+		for _, a := range content.PollStart.Answers {
+			answers = append(answers, core.PollAnswer{ID: a.ID, Text: a.Text})
+		}
+		h.OnPoll(ctx, core.PollRecord{
+			EventID:       evt.ID.String(),
+			RoomID:        evt.RoomID.String(),
+			Sender:        evt.Sender.String(),
+			Timestamp:     time.UnixMilli(evt.Timestamp),
+			Question:      content.PollStart.Question.Text,
+			Answers:       answers,
+			MaxSelections: content.PollStart.MaxSelections,
+		})
+	})
+
+	syncer.OnEventType(event.EventUnstablePollResponse, func(ctx context.Context, evt *event.Event) {
+		if ctx.Value(mautrix.SyncTokenContextKey) == "" || h.OnPollVote == nil {
+			return
+		}
+		content, ok := evt.Content.Parsed.(*event.PollResponseEventContent)
+		if !ok {
+			return
+		}
+		// A response references the poll with m.reference, not a thread or a reply.
+		h.OnPollVote(ctx, core.PollVote{
+			EventID:   evt.ID.String(),
+			PollID:    content.RelatesTo.EventID.String(),
+			RoomID:    evt.RoomID.String(),
+			Sender:    evt.Sender.String(),
+			Timestamp: time.UnixMilli(evt.Timestamp),
+			AnswerIDs: content.Response.Answers,
+		})
+	})
+
+	syncer.OnEventType(event.EventUnstablePollEnd, func(ctx context.Context, evt *event.Event) {
+		if ctx.Value(mautrix.SyncTokenContextKey) == "" || h.OnPollEnd == nil {
+			return
+		}
+		// mautrix has no struct for the end event, so read the relation out of the
+		// raw content.
+		pollID := pollEndTarget(evt.Content.VeryRaw)
+		if pollID == "" {
+			return
+		}
+		h.OnPollEnd(ctx, evt.RoomID.String(), pollID, time.UnixMilli(evt.Timestamp))
+	})
+
 	return c.mx.SyncWithContext(ctx)
+}
+
+func pollEndTarget(raw []byte) string {
+	var content struct {
+		RelatesTo struct {
+			EventID string `json:"event_id"`
+		} `json:"m.relates_to"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return ""
+	}
+	return content.RelatesTo.EventID
 }
 
 // toMessage maps a Matrix event onto the domain type, keeping the raw content so

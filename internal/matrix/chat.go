@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -191,6 +192,18 @@ const (
 	pollKindDisclosed   = "org.matrix.msc3381.poll.disclosed"
 	pollKindUndisclosed = "org.matrix.msc3381.poll.undisclosed"
 )
+
+// pollEndContent exists only so mautrix can parse the event. It has no struct for
+// poll ends, so every one decrypts with a WRN "Unsupported event type", which reads
+// like a fault and is not. The relation is still read from the raw content.
+type pollEndContent struct {
+	RelatesTo *event.RelatesTo `json:"m.relates_to,omitempty"`
+	Text      string           `json:"org.matrix.msc1767.text,omitempty"`
+}
+
+func init() {
+	event.TypeMap[event.EventUnstablePollEnd] = reflect.TypeOf(pollEndContent{})
+}
 
 func fallbackPollText(p core.Poll) string {
 	var b strings.Builder

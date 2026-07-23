@@ -1,0 +1,13 @@
+# secrets and per-install state — never commit
+.env
+state.json
+state.json.tmp
+
+# crypto store (olm/megolm keys, room state, sync position) and message history
+*.db
+*.db-wal
+*.db-shm
+
+# build output
+/momo
+/dist/

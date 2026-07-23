@@ -58,7 +58,38 @@ One line per thread: kind, root id, age, first line of the brief. Age is the
 interesting column — a thread open for two days means the ritual is not working, and
 is worth saying out loud rather than silently re-pinging.
 
+## Pushing on work that has stalled
+
+```bash
+momo nudge                       # every open thread older than 12h
+momo nudge --kind inbox --older-than 6h
+momo nudge --dry-run             # what it would push on
+```
+
+This posts *into* the existing thread — never a new one. A second ping about the same
+thing is how a reminder system becomes wallpaper, and the thread state exists so there
+is exactly one place per piece of work.
+
+The agent gets the original brief plus the conversation so far, and is asked to argue
+for finishing rather than restate the task: make the next step smaller, ask what is
+blocking it, or say plainly that the task is malformed and should be shrunk or
+dropped. Repeating the original message is the thing that already failed.
+
+`--min-interval` (default 20h) means a daily sweep run twice does not nag twice. Run
+it from a schedule; it is a no-op when nothing is stale.
+
 ## Mark it done
+
+**The user resolves, not the agent.** A thread is done when *they* judge the goal
+met — the research acknowledged, the action item created, the task actually finished.
+Never resolve a thread because you finished talking.
+
+The normal path is a reaction: they tap ✅ (or 👍 ☑️ 🆗) on the thread root in their
+client and momo closes it. That exists because typing an event id on a phone is not
+something anyone will do, and unresolved threads are the signal the whole system runs
+on — if resolving is awkward, everything looks stalled.
+
+From a script:
 
 ```bash
 momo resolve '!room:server' '$threadroot'

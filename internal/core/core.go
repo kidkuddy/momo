@@ -332,6 +332,8 @@ type Thread struct {
 	State      ThreadState
 	CreatedAt  time.Time
 	ResolvedAt time.Time
+	// NudgedAt is the last time momo pushed on this thread. Zero means never.
+	NudgedAt time.Time
 }
 
 func (t Thread) Open() bool { return t.State == ThreadOpen }
@@ -345,6 +347,7 @@ type Threads interface {
 	// open thread of that kind: doing the work late settles the backlog of
 	// reminders about it, it does not leave them outstanding.
 	SetThreadState(ctx context.Context, roomID, threadRoot string, state ThreadState, sameKind bool) (int, error)
+	MarkNudged(ctx context.Context, roomID, threadRoot string, at time.Time) error
 }
 
 // Sessions maps a thread to the agent session that owns it, so a conversation

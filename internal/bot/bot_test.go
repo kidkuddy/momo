@@ -183,8 +183,9 @@ func (nopHistory) OpenThreads(context.Context, string, string) ([]core.Thread, e
 func (nopHistory) SetThreadState(context.Context, string, string, core.ThreadState, bool) (int, error) {
 	return 0, nil
 }
-func (nopHistory) SavePoll(context.Context, core.PollRecord) error   { return nil }
-func (nopHistory) SavePollVote(context.Context, core.PollVote) error { return nil }
+func (nopHistory) MarkNudged(context.Context, string, string, time.Time) error { return nil }
+func (nopHistory) SavePoll(context.Context, core.PollRecord) error             { return nil }
+func (nopHistory) SavePollVote(context.Context, core.PollVote) error           { return nil }
 func (nopHistory) ClosePoll(context.Context, string, string, time.Time) error {
 	return nil
 }

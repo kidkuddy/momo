@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,6 +74,7 @@ func (a *app) daemon(ctx context.Context, ln net.Listener) error {
 			if err := a.history.SaveReaction(ctx, r); err != nil {
 				log.Printf("history: %v", err)
 			}
+			a.resolveByReaction(ctx, r)
 		},
 		OnRedact: func(ctx context.Context, roomID, targetID string) {
 			if err := a.history.MarkRedacted(ctx, roomID, targetID); err != nil {
@@ -118,6 +121,40 @@ func (a *app) daemon(ctx context.Context, ln net.Listener) error {
 func (a *app) handleIPC(ctx context.Context, req ipc.Request) (string, error) {
 	log.Printf("ipc: %s %v", req.Command, req.Args)
 	return a.runCommand(ctx, req.Command, req.Args)
+}
+
+// resolveEmoji are the reactions that close a thread.
+//
+// Typing `momo resolve '\u0021room' '$event'` on a phone is not a thing anyone will do,
+// and resolution is the user's judgement rather than the agent's — so it needs a
+// one-tap affordance or it will not happen, and unresolved threads are the signal
+// the whole system runs on.
+var resolveEmoji = map[string]bool{"✅": true, "☑️": true, "👍": true, "🆗": true}
+
+// resolveByReaction closes a thread when the user ticks its root.
+func (a *app) resolveByReaction(ctx context.Context, r core.Reaction) {
+	if r.Sender != a.allowed || !resolveEmoji[strings.TrimSpace(r.Key)] {
+		return
+	}
+	thread, err := a.history.Thread(ctx, r.RoomID, r.TargetID)
+	if err != nil || !thread.Open() {
+		return // not a thread root, or already dealt with
+	}
+	a.unpinKind(ctx, r.RoomID, thread.Kind, thread.ThreadRoot, false)
+	closed, err := a.history.SetThreadState(ctx, r.RoomID, thread.ThreadRoot, core.ThreadResolved, true)
+	if err != nil {
+		log.Printf("resolve: %v", err)
+		return
+	}
+	log.Printf("resolved %s by reaction (%d thread(s) closed)", thread.ThreadRoot, closed)
+
+	// Unpinning is the feedback for the simple case. Say something only when
+	// something non-obvious happened — that older threads were swept up with it.
+	if closed > 1 {
+		_, _ = a.chat.Send(ctx, r.RoomID,
+			fmt.Sprintf("Done — also settled %d older %s thread(s), same task.", closed-1, thread.Kind),
+			core.SendOpts{ThreadRoot: thread.ThreadRoot, Kind: core.KindNotice})
+	}
 }
 
 // sendTracker counts what momo has posted per thread, so the bot can tell whether an

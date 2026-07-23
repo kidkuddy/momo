@@ -93,10 +93,35 @@ CREATE TABLE IF NOT EXISTS threads (
     state       TEXT NOT NULL DEFAULT 'open',
     created_at  INTEGER NOT NULL,
     resolved_at INTEGER NOT NULL DEFAULT 0,
+    nudged_at   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_id, thread_root)
 );
 CREATE INDEX IF NOT EXISTS idx_threads_open ON threads (kind, state);
 `
+
+// migrations bring an existing database up to the current schema. CREATE TABLE IF
+// NOT EXISTS only creates; it never alters, so a column added to the schema above is
+// invisible to a database that already exists — which is every database but the
+// first one.
+//
+// SQLite has no "ADD COLUMN IF NOT EXISTS", so an already-applied migration reports a
+// duplicate column and is skipped. That keeps this list append-only and idempotent
+// without a version table to get out of step.
+var migrations = []string{
+	`ALTER TABLE threads ADD COLUMN nudged_at INTEGER NOT NULL DEFAULT 0`,
+}
+
+func migrate(db *sql.DB) error {
+	for _, stmt := range migrations {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return nil
+}
 
 // Open creates the database if needed and applies the schema.
 func Open(path string) (*Store, error) {
@@ -109,6 +134,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -399,6 +428,15 @@ func (s *Store) ClearSessions(ctx context.Context, roomID string) error {
 
 // ---- threads -----------------------------------------------------------
 
+// MarkNudged records that we have already pushed on this thread today, so a daily
+// sweep run twice does not nag twice.
+func (s *Store) MarkNudged(ctx context.Context, roomID, threadRoot string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE threads SET nudged_at = ? WHERE room_id = ? AND thread_root = ?`,
+		at.UnixMilli(), roomID, threadRoot)
+	return err
+}
+
 func (s *Store) CreateThread(ctx context.Context, t core.Thread) error {
 	if t.State == "" {
 		t.State = core.ThreadOpen
@@ -414,12 +452,12 @@ func (s *Store) CreateThread(ctx context.Context, t core.Thread) error {
 
 func (s *Store) Thread(ctx context.Context, roomID, threadRoot string) (core.Thread, error) {
 	var t core.Thread
-	var created, resolved int64
+	var created, resolved, nudged int64
 	var state string
 	err := s.db.QueryRowContext(ctx, `
-        SELECT room_id, thread_root, kind, brief, state, created_at, resolved_at
+        SELECT room_id, thread_root, kind, brief, state, created_at, resolved_at, nudged_at
         FROM threads WHERE room_id = ? AND thread_root = ?`, roomID, threadRoot).
-		Scan(&t.RoomID, &t.ThreadRoot, &t.Kind, &t.Brief, &state, &created, &resolved)
+		Scan(&t.RoomID, &t.ThreadRoot, &t.Kind, &t.Brief, &state, &created, &resolved, &nudged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, core.ErrNotFound
 	}
@@ -431,13 +469,16 @@ func (s *Store) Thread(ctx context.Context, roomID, threadRoot string) (core.Thr
 	if resolved != 0 {
 		t.ResolvedAt = time.UnixMilli(resolved)
 	}
+	if nudged != 0 {
+		t.NudgedAt = time.UnixMilli(nudged)
+	}
 	return t, nil
 }
 
 // OpenThreads lists outstanding work, oldest first — the order it should be worked
 // in, and the order that makes a backlog obvious.
 func (s *Store) OpenThreads(ctx context.Context, roomID, kind string) ([]core.Thread, error) {
-	q := `SELECT room_id, thread_root, kind, brief, state, created_at, resolved_at
+	q := `SELECT room_id, thread_root, kind, brief, state, created_at, resolved_at, nudged_at
           FROM threads WHERE state = 'open'`
 	var args []any
 	if roomID != "" {
@@ -459,15 +500,18 @@ func (s *Store) OpenThreads(ctx context.Context, roomID, kind string) ([]core.Th
 	var out []core.Thread
 	for rows.Next() {
 		var t core.Thread
-		var created, resolved int64
+		var created, resolved, nudged int64
 		var state string
-		if err := rows.Scan(&t.RoomID, &t.ThreadRoot, &t.Kind, &t.Brief, &state, &created, &resolved); err != nil {
+		if err := rows.Scan(&t.RoomID, &t.ThreadRoot, &t.Kind, &t.Brief, &state, &created, &resolved, &nudged); err != nil {
 			return nil, err
 		}
 		t.State = core.ThreadState(state)
 		t.CreatedAt = time.UnixMilli(created)
 		if resolved != 0 {
 			t.ResolvedAt = time.UnixMilli(resolved)
+		}
+		if nudged != 0 {
+			t.NudgedAt = time.UnixMilli(nudged)
 		}
 		out = append(out, t)
 	}

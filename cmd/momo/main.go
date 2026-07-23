@@ -43,6 +43,9 @@ const usage = `momo — Matrix bot and CLI
   momo threads [--kind K] [--room R]   what is still outstanding
   momo resolve <room> <thread>         mark done; also settles older threads of the
                                        same kind [--only] [--keep-pin]
+                                       (or just react ✅ on the thread in your client)
+  momo nudge                           push on threads still open [--older-than 12h]
+                                       [--kind K] [--min-interval 20h] [--dry-run]
   momo rooms                           list joined rooms
   momo join <room|alias>
   momo leave <room>
@@ -74,7 +77,7 @@ var forwardable = map[string]bool{
 	"typing": true, "read": true, "poll": true, "endpoll": true,
 	"poll-results": true, "rooms": true, "join": true, "leave": true,
 	"invite": true, "whoami": true, "history": true, "clear": true,
-	"start": true, "resolve": true, "threads": true,
+	"start": true, "resolve": true, "threads": true, "nudge": true,
 }
 
 func main() {

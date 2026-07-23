@@ -46,6 +46,15 @@ momo creates the conversation with the work already prepared.
 - [x] `momo-threads` skill, installed to `~/.claude/skills` by `make install-skills`,
       so a krakoa workflow step can drive momo with no wiring.
 
+**Resolution is the user's call.** A thread is done when they judge the goal met, not
+when the agent stops talking — so `momo resolve` exists for scripts, and reacting ✅
+on the thread root is the one-tap path that makes it actually happen from a phone.
+
+**Stalled work gets argued with, not repeated.** `momo nudge` posts into the existing
+thread with the original brief and the conversation so far, asking the agent to shrink
+the next step or name what is blocking it. `--min-interval` stops a daily sweep run
+twice from nagging twice.
+
 ## In progress — the agent engine
 
 The point of the project. An incoming message spawns an agent session in the

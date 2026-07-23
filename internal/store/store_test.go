@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -272,4 +273,71 @@ func TestSessionExpiresWhenIdle(t *testing.T) {
 	if got, _ := s.SessionFor(ctx, "!r", "$t", time.Nanosecond); got != "" {
 		t.Fatalf("stale session returned: %q", got)
 	}
+}
+
+// A daily sweep run twice must not nag twice. The nudge timestamp is what makes the
+// interval enforceable, so it has to survive a read.
+func TestNudgeTimestampRoundTrips(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	must(t, s.CreateThread(ctx, core.Thread{
+		RoomID: "!r", ThreadRoot: "$t", Kind: "inbox",
+		State: core.ThreadOpen, CreatedAt: time.Now(),
+	}))
+
+	got, err := s.Thread(ctx, "!r", "$t")
+	must(t, err)
+	if !got.NudgedAt.IsZero() {
+		t.Fatalf("a new thread claims to have been nudged: %v", got.NudgedAt)
+	}
+
+	at := time.Now().Truncate(time.Millisecond)
+	must(t, s.MarkNudged(ctx, "!r", "$t", at))
+
+	got, err = s.Thread(ctx, "!r", "$t")
+	must(t, err)
+	if !got.NudgedAt.Equal(at) {
+		t.Fatalf("nudged_at = %v, want %v", got.NudgedAt, at)
+	}
+	// It must come back from the list query too — that is what the sweep reads.
+	list, err := s.OpenThreads(ctx, "!r", "")
+	must(t, err)
+	if len(list) != 1 || !list[0].NudgedAt.Equal(at) {
+		t.Fatalf("list lost nudged_at: %+v", list)
+	}
+}
+
+// A database created before a column existed must pick it up on open. Without this
+// every schema change breaks every existing install.
+func TestMigrationAddsColumnToOldDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := sql.Open("sqlite3", path)
+	must(t, err)
+	// The threads table as it shipped before nudged_at.
+	_, err = old.Exec(`CREATE TABLE threads (
+        room_id TEXT NOT NULL, thread_root TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '',
+        brief TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'open',
+        created_at INTEGER NOT NULL, resolved_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (room_id, thread_root))`)
+	must(t, err)
+	_, err = old.Exec(`INSERT INTO threads (room_id, thread_root, created_at) VALUES ('!r','$t',1)`)
+	must(t, err)
+	must(t, old.Close())
+
+	s, err := Open(path)
+	must(t, err)
+	defer s.Close()
+
+	ctx := context.Background()
+	// The pre-existing row survives, and the new column is usable on it.
+	got, err := s.Thread(ctx, "!r", "$t")
+	must(t, err)
+	if !got.NudgedAt.IsZero() {
+		t.Fatalf("nudged_at = %v, want zero", got.NudgedAt)
+	}
+	must(t, s.MarkNudged(ctx, "!r", "$t", time.Now()))
+
+	// Opening twice must not fail on the already-applied migration.
+	s2, err := Open(path)
+	must(t, err)
+	s2.Close()
 }

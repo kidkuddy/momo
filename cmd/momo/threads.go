@@ -18,10 +18,19 @@ import (
 // should be interrupted, and momo has to create the conversation.
 func (a *app) startThread(ctx context.Context, args []string) (string, error) {
 	f := parseFlags(args, "no-pin", "no-agent")
-	if len(f.rest) < 1 {
-		return "", fmt.Errorf("usage: momo start <room> --kind <kind> --message <ping> [--brief <text>] [--wip N]")
+	// The room is optional: without it momo uses the DM with the allowed user, so a
+	// scheduled workflow does not have to carry a room id that will go stale.
+	roomID := f.get("room")
+	if roomID == "" && len(f.rest) > 0 && strings.HasPrefix(f.rest[0], "!") {
+		roomID = f.rest[0]
+		f.rest = f.rest[1:]
 	}
-	roomID := f.rest[0]
+	if roomID == "" {
+		var err error
+		if roomID, err = a.defaultRoom(ctx); err != nil {
+			return "", err
+		}
+	}
 	kind := f.get("kind")
 	brief := f.get("brief")
 	if brief == "" && f.get("brief-file") != "" {
@@ -33,7 +42,7 @@ func (a *app) startThread(ctx context.Context, args []string) (string, error) {
 	}
 	ping := f.get("message")
 	if ping == "" {
-		ping = strings.Join(f.rest[1:], " ")
+		ping = strings.Join(f.rest, " ")
 	}
 	if ping == "" {
 		return "", fmt.Errorf("a thread needs an opening message: --message <text>")
@@ -93,6 +102,18 @@ func (a *app) startThread(ctx context.Context, args []string) (string, error) {
 		go a.runBrief(ctx, roomID, eventID, brief)
 	}
 	return out.String(), nil
+}
+
+// defaultRoom is the DM with the user momo obeys.
+func (a *app) defaultRoom(ctx context.Context) (string, error) {
+	if a.allowed == "" {
+		return "", fmt.Errorf("no room given and ALLOWED_USER is not set")
+	}
+	room, err := a.rooms.DirectRoom(ctx, a.allowed)
+	if err != nil {
+		return "", fmt.Errorf("no room given and no DM with %s found: %w", a.allowed, err)
+	}
+	return room, nil
 }
 
 // runBrief hands a thread's brief to the engine and lets it answer in place.

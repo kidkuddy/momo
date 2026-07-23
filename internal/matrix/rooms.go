@@ -97,6 +97,25 @@ func (r *Rooms) Invite(ctx context.Context, roomID, userID string) error {
 	return err
 }
 
+// DirectRoom returns the DM with the given user, if one exists.
+//
+// It exists so a scheduled workflow does not have to carry a room id: the room is a
+// property of who momo talks to, and hardcoding it in every cron entry is a stale
+// value waiting to happen.
+func (r *Rooms) DirectRoom(ctx context.Context, userID string) (string, error) {
+	var content map[id.UserID][]id.RoomID
+	if err := r.c.mx.GetAccountData(ctx, "m.direct", &content); err != nil {
+		return "", err
+	}
+	rooms := content[id.UserID(userID)]
+	if len(rooms) == 0 {
+		return "", core.ErrNotFound
+	}
+	// The most recent is the live one; earlier entries are usually abandoned rooms
+	// left behind by a client that recreated the DM.
+	return rooms[len(rooms)-1].String(), nil
+}
+
 func (r *Rooms) WhoAmI(ctx context.Context) (string, string, error) {
 	return r.c.mx.UserID.String(), r.c.mx.DeviceID.String(), nil
 }

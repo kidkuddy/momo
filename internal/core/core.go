@@ -237,6 +237,8 @@ type Rooms interface {
 	Leave(ctx context.Context, roomID string) error
 	Invite(ctx context.Context, roomID, userID string) error
 	WhoAmI(ctx context.Context) (userID, deviceID string, err error)
+	// DirectRoom is the DM with a user, so callers need not carry a room id.
+	DirectRoom(ctx context.Context, userID string) (string, error)
 }
 
 // HistoryFilter narrows a history query. Zero values mean "no constraint".

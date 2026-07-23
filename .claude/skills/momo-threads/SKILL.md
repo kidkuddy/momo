@@ -17,15 +17,26 @@ same. Inside a session momo spawned it is already set, so plain `momo …` works
 it explicitly from a cron or workflow momo did not start, or the command has no
 credentials and fails with `no HOMESERVER set`.
 
+**Calling momo from a scheduler.** Use the absolute path `~/.local/bin/momo` — a
+cron or launchd job gets a minimal `PATH` that will not contain it. Everything works
+from an empty environment given `--profile`; no shell config needs sourcing. Commands
+exit 0 on success *and* when a WIP limit skips the work, so a workflow step only fails
+on a genuine error.
+
 ## Open a piece of work
 
 ```bash
-momo start '!room:server' \
+momo --profile momo start \
   --kind inbox \
   --message "inbox time — here's where things stand" \
   --brief-file /path/to/brief.md \
   --wip 2
 ```
+
+**No room id needed.** Without one momo uses the DM with the user it obeys, which is
+what a scheduled job wants — a room id hardcoded in a cron entry is a stale value
+waiting to happen. Pass `--room '!id:server'` (or as the first argument) only when
+targeting somewhere other than that DM.
 
 Order of events: the ping is posted and pinned, the thread is recorded with its
 brief, and an agent runs the brief **in the background**. The command returns the
@@ -39,6 +50,7 @@ rather than a context switch. **Never send a bare "time to do X" — send X, pre
 | Flag | Effect |
 |---|---|
 | `--message T` | the opening ping. Required |
+| `--room R` | where to post. Defaults to the DM with the allowed user |
 | `--kind K` | groups recurring work so duplicates can settle each other |
 | `--brief T` / `--brief-file P` | what the agent prepares. Without either, no agent runs |
 | `--wip N` | skip if N threads of this kind are already open |

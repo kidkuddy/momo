@@ -22,7 +22,8 @@ Messages both directions, reactions, redactions, polls and votes. Queryable by r
 thread, sender, time.
 
 **CLI.** `daemon send upload react edit redact typing read poll endpoll poll-results
-rooms join leave invite whoami history crosssign backup restore reset-session`.
+rooms join leave invite whoami history clear profiles start threads nudge resolve
+schedule crosssign backup restore reset-session`.
 
 **Polls.** Start, end, and read votes back. `core.Tally` implements the MSC3381
 counting rules as a pure function.
@@ -54,6 +55,11 @@ on the thread root is the one-tap path that makes it actually happen from a phon
 thread with the original brief and the conversation so far, asking the agent to shrink
 the next step or name what is blocking it. `--min-interval` stops a daily sweep run
 twice from nagging twice.
+
+**Reminders.** `momo schedule add` sets a one-shot or recurring reminder that opens a
+prepared thread when it fires. momo takes only exact times and cron expressions —
+reading "tomorrow after lunch" is the agent's job, and a parser in Go would be worse
+at it and would fail silently. Missed occurrences are skipped, not replayed.
 
 ## In progress — the agent engine
 

@@ -13,10 +13,11 @@ react, edit, poll, read history — without touching the protocol.
 
 ## Status
 
-Working: end-to-end encryption including DMs, cross-signing, room key backup, the
-Matrix CLI, message history, polls with vote tallying, multiple bot profiles, and the
-agent engine — an incoming message spawns a Claude Code session that replies for
-itself through the CLI, resuming per thread.
+Working: end-to-end encryption including DMs, cross-signing and room key backup; the
+Matrix CLI; message history; polls with vote tallying; multiple bot profiles; the
+agent engine — a message spawns a Claude Code session that replies for itself through
+the CLI, resuming per thread; scheduled reminders that open a prepared thread when
+they come due; and thread tracking with pinning, WIP limits and nudges.
 
 Not built: streaming output, approval gates, secret redaction. See
 [ROADMAP.md](ROADMAP.md).
@@ -121,6 +122,21 @@ momo clear <room>                start over: redact momo's messages, wipe local
                                  history and agent sessions
                                  [--local] wipe locally only
                                  [--sessions-only] forget sessions, keep transcript
+
+  raising work with you
+momo start --message <ping>      open a pinned thread with the work prepared
+                                 [--kind K] [--brief T|--brief-file P] [--wip N]
+                                 room defaults to the DM with ALLOWED_USER
+momo threads                     what is still outstanding
+momo nudge                       push on threads that have stalled
+momo resolve <room> <thread>     mark done (or just react ✅ on the thread)
+
+  reminders
+momo schedule add --message <ping>  --at <time> | --in <dur> | --cron <expr>
+                                    [--every <dur>] [--brief …] [--kind K] [--wip N]
+momo schedule list|rm <id>
+
+  setup and recovery
 momo profiles                    list configured bots
 momo crosssign|backup|restore [recovery key]
 momo reset-session               forget token+device, forcing a fresh login
@@ -149,6 +165,7 @@ internal/engine/   echo / Claude Code — swap in another agent here
 internal/bot/      the rules: who gets answered, and how
 internal/config/   profile resolution
 internal/ipc/      unix socket so an agent session can act through the daemon
+internal/schedule/ when a reminder fires next
 ```
 
 ### Why the socket exists
@@ -165,7 +182,7 @@ Three files hold state, and they are not interchangeable:
 |---|---|
 | `state.json` | access token, device id, pickle key |
 | `momo.db` | olm/megolm keys, room state, sync position (mautrix owns the schema) |
-| `history.db` | message history (momo owns this one) |
+| `history.db` | messages, reactions, polls, threads, reminders (momo owns this one) |
 
 ## Build tag
 
@@ -177,6 +194,16 @@ always passes it.
 
 `.claude/skills/` ships four skills so Claude Code can drive and modify momo:
 `matrix-cli`, `matrix-events`, `matrix-e2ee`, `momo-dev`.
+
+## Reminders
+
+Ask momo in chat — "remind me to pay the invoice tomorrow at nine" — and it schedules
+it. When it fires, a pinned thread opens with the work already prepared.
+
+momo itself takes only exact times and cron expressions; translating what you said is
+the agent's job, since it already knows the date and your timezone. Missed
+occurrences are skipped rather than replayed: three days offline means one thread
+today, not three.
 
 ## Known limits
 

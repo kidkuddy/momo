@@ -41,12 +41,21 @@ clean:
 # PROFILE=<name> is required; the daemon runs under that profile's identity.
 PROFILE ?= momo
 PLIST   := $(HOME)/Library/LaunchAgents/com.github.kidkuddy.momo.$(PROFILE).plist
+# The service must NOT run the repo's build output: rebuilding replaces the file
+# under a starting process and wedges it in dyld before main() runs.
+PREFIX  ?= $(HOME)/.local/bin
+INSTALLED := $(PREFIX)/momo
+
+install: build
+	@mkdir -p $(PREFIX)
+	@install -m 0755 $(BIN) $(INSTALLED)
+	@echo "installed $(INSTALLED)"
 
 # Renders the plist. Load it yourself with `make service-load` once you have
 # read it — it starts momo at every login.
-service: build
+service: install
 	@mkdir -p $(HOME)/Library/LaunchAgents
-	@sed -e 's|__BINARY__|$(CURDIR)/$(BIN)|g' \
+	@sed -e 's|__BINARY__|$(INSTALLED)|g' \
 	     -e 's|__PROFILE__|$(PROFILE)|g' \
 	     -e 's|__DIR__|$(HOME)/.momo/$(PROFILE)|g' \
 	     contrib/momo.plist.template > $(PLIST)
@@ -65,4 +74,27 @@ service-status:
 	@launchctl print gui/$$(id -u)/com.github.kidkuddy.momo.$(PROFILE) 2>/dev/null \
 	  | grep -E "state|pid|last exit" || echo "not loaded"
 
-.PHONY: service service-load service-unload service-status
+.PHONY: install service service-load service-unload service-status
+
+# ---- skills -------------------------------------------------------------
+# Symlink momo's skills into ~/.claude/skills so any Claude Code session — a
+# krakoa workflow step, a cron, an interactive session — can drive momo without
+# knowing where this repo lives. Symlinks, so editing here updates them.
+SKILLS := $(HOME)/.claude/skills
+
+install-skills:
+	@mkdir -p $(SKILLS)
+	@for s in .claude/skills/*/; do \
+	  name=$$(basename $$s); \
+	  rm -rf "$(SKILLS)/$$name"; \
+	  ln -s "$(CURDIR)/$$s" "$(SKILLS)/$$name"; \
+	  echo "linked $$name"; \
+	done
+
+uninstall-skills:
+	@for s in .claude/skills/*/; do \
+	  name=$$(basename $$s); \
+	  [ -L "$(SKILLS)/$$name" ] && rm "$(SKILLS)/$$name" && echo "removed $$name" || true; \
+	done
+
+.PHONY: install-skills uninstall-skills

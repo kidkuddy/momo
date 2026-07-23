@@ -29,6 +29,12 @@ func (a *app) runCommand(ctx context.Context, cmd string, args []string) (string
 		return a.pollResults(ctx, args)
 	case "clear":
 		return a.clearRoom(ctx, args)
+	case "start":
+		return a.startThread(ctx, args)
+	case "resolve":
+		return a.resolveThread(ctx, args)
+	case "threads":
+		return a.listThreads(ctx, args)
 	case "crosssign":
 		return a.crossSign(ctx, strings.Join(args, " "))
 	case "backup":
@@ -336,6 +342,11 @@ func (a *app) crossSign(ctx context.Context, recoveryKey string) (string, error)
 	return fmt.Sprintf("\ncross-signing set up\n\nRECOVERY KEY: %s\n\n"+
 		"Store it offline now — it is not saved anywhere and cannot be shown again.\n"+
 		"It also unlocks the room key backup.\n\n", key), nil
+}
+
+func readFile(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	return string(b), err
 }
 
 func line(id string, err error) (string, error) {

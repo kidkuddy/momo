@@ -31,6 +31,12 @@ type Deps struct {
 	// Workdir bounds where an engine may operate.
 	Workdir string
 
+	// SessionIdle ends an agent session that has been untouched this long. Zero
+	// keeps sessions forever. This is a cost control, not a memory one: `claude -p`
+	// exits after each reply, so nothing is held open — but resuming an
+	// ever-growing context gets more expensive every turn.
+	SessionIdle time.Duration
+
 	// SentInThread counts messages momo has posted into a thread. An agent engine
 	// answers by calling the CLI, so this is how the bot tells "it already replied"
 	// from "it finished without saying anything" — there is no flag on the result
@@ -155,7 +161,7 @@ func (b *Bot) resumeID(ctx context.Context, roomID, root string) string {
 	if b.d.Sessions == nil {
 		return ""
 	}
-	id, err := b.d.Sessions.SessionFor(ctx, roomID, root)
+	id, err := b.d.Sessions.SessionFor(ctx, roomID, root, b.d.SessionIdle)
 	if err != nil {
 		log.Printf("sessions: %v", err)
 		return ""

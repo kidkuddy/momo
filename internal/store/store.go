@@ -82,6 +82,20 @@ CREATE TABLE IF NOT EXISTS engine_sessions (
     updated_at  INTEGER NOT NULL,
     PRIMARY KEY (room_id, thread_root)
 );
+
+-- Work momo raised with the user. Scheduled work has to survive being ignored,
+-- which is the normal case, so a thread carries state rather than being fire-and-forget.
+CREATE TABLE IF NOT EXISTS threads (
+    room_id     TEXT NOT NULL,
+    thread_root TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT '',
+    brief       TEXT NOT NULL DEFAULT '',
+    state       TEXT NOT NULL DEFAULT 'open',
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (room_id, thread_root)
+);
+CREATE INDEX IF NOT EXISTS idx_threads_open ON threads (kind, state);
 `
 
 // Open creates the database if needed and applies the schema.
@@ -316,15 +330,26 @@ func millis(t time.Time) int64 {
 
 // ---- agent sessions ----------------------------------------------------
 
-func (s *Store) SessionFor(ctx context.Context, roomID, threadRoot string) (string, error) {
+// SessionFor returns the session to resume. An idle window of zero means never
+// expire; otherwise a session untouched for longer is treated as ended, because
+// resuming an ever-growing context costs more every turn and a conversation
+// abandoned hours ago is rarely worth continuing.
+func (s *Store) SessionFor(ctx context.Context, roomID, threadRoot string, idle time.Duration) (string, error) {
 	var id string
+	var updated int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT session_id FROM engine_sessions WHERE room_id = ? AND thread_root = ?`,
-		roomID, threadRoot).Scan(&id)
+		`SELECT session_id, updated_at FROM engine_sessions WHERE room_id = ? AND thread_root = ?`,
+		roomID, threadRoot).Scan(&id, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil // no session yet is normal, not an error
 	}
-	return id, err
+	if err != nil {
+		return "", err
+	}
+	if idle > 0 && time.Since(time.UnixMilli(updated)) > idle {
+		return "", nil
+	}
+	return id, nil
 }
 
 func (s *Store) SetSession(ctx context.Context, roomID, threadRoot, sessionID string) error {
@@ -370,4 +395,124 @@ func (s *Store) ClearRoom(ctx context.Context, roomID string) error {
 func (s *Store) ClearSessions(ctx context.Context, roomID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM engine_sessions WHERE room_id = ?`, roomID)
 	return err
+}
+
+// ---- threads -----------------------------------------------------------
+
+func (s *Store) CreateThread(ctx context.Context, t core.Thread) error {
+	if t.State == "" {
+		t.State = core.ThreadOpen
+	}
+	_, err := s.db.ExecContext(ctx, `
+        INSERT INTO threads (room_id, thread_root, kind, brief, state, created_at)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(room_id, thread_root) DO UPDATE SET
+            kind = excluded.kind, brief = excluded.brief`,
+		t.RoomID, t.ThreadRoot, t.Kind, t.Brief, string(t.State), t.CreatedAt.UnixMilli())
+	return err
+}
+
+func (s *Store) Thread(ctx context.Context, roomID, threadRoot string) (core.Thread, error) {
+	var t core.Thread
+	var created, resolved int64
+	var state string
+	err := s.db.QueryRowContext(ctx, `
+        SELECT room_id, thread_root, kind, brief, state, created_at, resolved_at
+        FROM threads WHERE room_id = ? AND thread_root = ?`, roomID, threadRoot).
+		Scan(&t.RoomID, &t.ThreadRoot, &t.Kind, &t.Brief, &state, &created, &resolved)
+	if errors.Is(err, sql.ErrNoRows) {
+		return t, core.ErrNotFound
+	}
+	if err != nil {
+		return t, err
+	}
+	t.State = core.ThreadState(state)
+	t.CreatedAt = time.UnixMilli(created)
+	if resolved != 0 {
+		t.ResolvedAt = time.UnixMilli(resolved)
+	}
+	return t, nil
+}
+
+// OpenThreads lists outstanding work, oldest first — the order it should be worked
+// in, and the order that makes a backlog obvious.
+func (s *Store) OpenThreads(ctx context.Context, roomID, kind string) ([]core.Thread, error) {
+	q := `SELECT room_id, thread_root, kind, brief, state, created_at, resolved_at
+          FROM threads WHERE state = 'open'`
+	var args []any
+	if roomID != "" {
+		q += " AND room_id = ?"
+		args = append(args, roomID)
+	}
+	if kind != "" {
+		q += " AND kind = ?"
+		args = append(args, kind)
+	}
+	q += " ORDER BY created_at"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []core.Thread
+	for rows.Next() {
+		var t core.Thread
+		var created, resolved int64
+		var state string
+		if err := rows.Scan(&t.RoomID, &t.ThreadRoot, &t.Kind, &t.Brief, &state, &created, &resolved); err != nil {
+			return nil, err
+		}
+		t.State = core.ThreadState(state)
+		t.CreatedAt = time.UnixMilli(created)
+		if resolved != 0 {
+			t.ResolvedAt = time.UnixMilli(resolved)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// SetThreadState closes a thread, and optionally every other open thread of the same
+// kind. That second part is the point: three unanswered inbox reminders are one
+// overdue task, so doing it late settles the whole backlog rather than leaving two
+// stale reminders to nag about work already done.
+func (s *Store) SetThreadState(ctx context.Context, roomID, threadRoot string, state core.ThreadState, sameKind bool) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UnixMilli()
+	res, err := tx.ExecContext(ctx,
+		`UPDATE threads SET state = ?, resolved_at = ? WHERE room_id = ? AND thread_root = ?`,
+		string(state), now, roomID, threadRoot)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	closed := int(n)
+
+	if sameKind {
+		var kind string
+		err := tx.QueryRowContext(ctx,
+			`SELECT kind FROM threads WHERE room_id = ? AND thread_root = ?`, roomID, threadRoot).Scan(&kind)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return closed, err
+		}
+		if kind != "" {
+			res, err := tx.ExecContext(ctx, `
+                UPDATE threads SET state = ?, resolved_at = ?
+                WHERE room_id = ? AND kind = ? AND state = 'open' AND thread_root <> ?`,
+				string(core.ThreadSuperseded), now, roomID, kind, threadRoot)
+			if err != nil {
+				return closed, err
+			}
+			n, _ := res.RowsAffected()
+			closed += int(n)
+		}
+	}
+	return closed, tx.Commit()
 }

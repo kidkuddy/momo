@@ -42,26 +42,48 @@ type Handler func(ctx context.Context, req Request) (string, error)
 // ErrNoDaemon means nothing is listening, so the caller should proceed directly.
 var ErrNoDaemon = errors.New("no daemon listening")
 
-// Serve listens until ctx is cancelled. A stale socket file from a crashed daemon is
-// removed first, since bind fails on an existing path even when nobody is behind it.
-func Serve(ctx context.Context, path string, h Handler) error {
+// Listen binds the socket. It is separate from Serve so the daemon can claim the
+// path *before* it opens the crypto store, which takes seconds of network work.
+// Without that ordering there is a window where a CLI command sees no socket, falls
+// back to opening the store directly, and contends with the daemon that is still
+// starting.
+//
+// A stale socket file from a crashed daemon is removed first, since bind fails on an
+// existing path even when nobody is behind it.
+func Listen(path string) (net.Listener, error) {
 	if isLive(path) {
-		return fmt.Errorf("another daemon is already listening on %s", path)
+		return nil, fmt.Errorf("another daemon is already listening on %s", path)
 	}
 	_ = os.Remove(path)
 
 	ln, err := net.Listen("unix", path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// The socket carries the power to post as the bot, so keep it to this user.
 	if err := os.Chmod(path, 0o600); err != nil {
 		ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+// Serve binds and serves in one step, for callers with nothing to set up first.
+func Serve(ctx context.Context, path string, h Handler) error {
+	ln, err := Listen(path)
+	if err != nil {
 		return err
 	}
+	return ServeOn(ctx, ln, h)
+}
+
+// ServeOn serves on an already-bound listener until ctx is cancelled.
+func ServeOn(ctx context.Context, ln net.Listener, h Handler) error {
 	defer func() {
 		ln.Close()
-		os.Remove(path)
+		if addr := ln.Addr(); addr != nil {
+			os.Remove(addr.String())
+		}
 	}()
 
 	go func() {

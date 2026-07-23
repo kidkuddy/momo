@@ -51,7 +51,11 @@ type stateFile struct {
 // Callers must Close it so the crypto database is checkpointed.
 func New(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.Homeserver == "" {
-		return nil, fmt.Errorf("homeserver is required")
+		// Almost always a missing --profile rather than a missing setting: without
+		// one, momo reads the ambient environment, which is empty outside a shell
+		// that sourced .env.
+		return nil, fmt.Errorf("no HOMESERVER set — pick a bot with --profile <name> " +
+			"(momo profiles), or set HOMESERVER in the environment")
 	}
 	st, err := loadState(cfg.StatePath)
 	if err != nil {

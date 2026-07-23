@@ -172,7 +172,7 @@ func TestClearRoomRemovesEverything(t *testing.T) {
 	if got, _ := s.PollVotes(ctx, "$p"); len(got) != 0 {
 		t.Errorf("%d votes survived", len(got))
 	}
-	if got, _ := s.SessionFor(ctx, "!a", "$1"); got != "" {
+	if got, _ := s.SessionFor(ctx, "!a", "$1", 0); got != "" {
 		t.Errorf("agent session survived: %q", got)
 	}
 	// Other rooms must be untouched.
@@ -190,10 +190,86 @@ func TestClearSessionsKeepsHistory(t *testing.T) {
 
 	must(t, s.ClearSessions(ctx, "!a"))
 
-	if got, _ := s.SessionFor(ctx, "!a", "$1"); got != "" {
+	if got, _ := s.SessionFor(ctx, "!a", "$1", 0); got != "" {
 		t.Errorf("session survived: %q", got)
 	}
 	if got, _ := s.Messages(ctx, core.HistoryFilter{RoomID: "!a"}); len(got) != 1 {
 		t.Errorf("history was destroyed: %d messages", len(got))
+	}
+}
+
+// Three unanswered inbox reminders are one overdue task. Doing it late must settle
+// the whole backlog, not leave stale reminders nagging about finished work.
+func TestResolveSupersedesSameKind(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	for i, root := range []string{"$t1", "$t2", "$t3"} {
+		must(t, s.CreateThread(ctx, core.Thread{
+			RoomID: "!r", ThreadRoot: root, Kind: "inbox",
+			State: core.ThreadOpen, CreatedAt: time.Now().Add(time.Duration(i) * time.Hour),
+		}))
+	}
+	must(t, s.CreateThread(ctx, core.Thread{
+		RoomID: "!r", ThreadRoot: "$other", Kind: "papers",
+		State: core.ThreadOpen, CreatedAt: time.Now(),
+	}))
+
+	closed, err := s.SetThreadState(ctx, "!r", "$t3", core.ThreadResolved, true)
+	must(t, err)
+	if closed != 3 {
+		t.Fatalf("closed %d threads, want 3 (the one done plus two superseded)", closed)
+	}
+
+	open, err := s.OpenThreads(ctx, "!r", "")
+	must(t, err)
+	if len(open) != 1 || open[0].Kind != "papers" {
+		t.Fatalf("a different kind was swept up: %+v", open)
+	}
+	// The one actually done is distinguishable from the ones dropped.
+	done, err := s.Thread(ctx, "!r", "$t3")
+	must(t, err)
+	if done.State != core.ThreadResolved {
+		t.Errorf("state = %q, want resolved", done.State)
+	}
+	dropped, err := s.Thread(ctx, "!r", "$t1")
+	must(t, err)
+	if dropped.State != core.ThreadSuperseded {
+		t.Errorf("state = %q, want superseded", dropped.State)
+	}
+}
+
+func TestResolveOnlyLeavesOthersOpen(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	for _, root := range []string{"$a", "$b"} {
+		must(t, s.CreateThread(ctx, core.Thread{
+			RoomID: "!r", ThreadRoot: root, Kind: "inbox",
+			State: core.ThreadOpen, CreatedAt: time.Now(),
+		}))
+	}
+	closed, err := s.SetThreadState(ctx, "!r", "$a", core.ThreadResolved, false)
+	must(t, err)
+	if closed != 1 {
+		t.Fatalf("closed %d, want 1", closed)
+	}
+	if open, _ := s.OpenThreads(ctx, "!r", "inbox"); len(open) != 1 {
+		t.Fatalf("%d open, want 1", len(open))
+	}
+}
+
+// A session abandoned hours ago should not be resumed: the context has grown and the
+// conversation has moved on.
+func TestSessionExpiresWhenIdle(t *testing.T) {
+	s, ctx := open(t), context.Background()
+	must(t, s.SetSession(ctx, "!r", "$t", "sess-1"))
+
+	if got, _ := s.SessionFor(ctx, "!r", "$t", time.Hour); got != "sess-1" {
+		t.Fatalf("fresh session not returned: %q", got)
+	}
+	// A zero window means never expire.
+	if got, _ := s.SessionFor(ctx, "!r", "$t", 0); got != "sess-1" {
+		t.Fatalf("zero idle expired a session: %q", got)
+	}
+	// Anything already older than the window is gone.
+	if got, _ := s.SessionFor(ctx, "!r", "$t", time.Nanosecond); got != "" {
+		t.Fatalf("stale session returned: %q", got)
 	}
 }

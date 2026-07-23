@@ -152,7 +152,7 @@ type fakeSessions struct{ ids map[string]string }
 
 func newFakeSessions() *fakeSessions { return &fakeSessions{ids: map[string]string{}} }
 
-func (f *fakeSessions) SessionFor(_ context.Context, room, thread string) (string, error) {
+func (f *fakeSessions) SessionFor(_ context.Context, room, thread string, _ time.Duration) (string, error) {
 	return f.ids[room+thread], nil
 }
 func (f *fakeSessions) SetSession(_ context.Context, room, thread, id string) error {
@@ -172,6 +172,16 @@ func (nopHistory) Messages(context.Context, core.HistoryFilter) ([]core.Message,
 }
 func (nopHistory) Reactions(context.Context, string, string) ([]core.Reaction, error) {
 	return nil, nil
+}
+func (nopHistory) CreateThread(context.Context, core.Thread) error { return nil }
+func (nopHistory) Thread(context.Context, string, string) (core.Thread, error) {
+	return core.Thread{}, nil
+}
+func (nopHistory) OpenThreads(context.Context, string, string) ([]core.Thread, error) {
+	return nil, nil
+}
+func (nopHistory) SetThreadState(context.Context, string, string, core.ThreadState, bool) (int, error) {
+	return 0, nil
 }
 func (nopHistory) SavePoll(context.Context, core.PollRecord) error   { return nil }
 func (nopHistory) SavePollVote(context.Context, core.PollVote) error { return nil }

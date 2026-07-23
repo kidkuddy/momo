@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -15,7 +16,7 @@ import (
 	"github.com/kidkuddy/momo/internal/matrix"
 )
 
-func (a *app) daemon(ctx context.Context) error {
+func (a *app) daemon(ctx context.Context, ln net.Listener) error {
 	if a.allowed == "" {
 		return errors.New("ALLOWED_USER must be set: it is the only gate between a chat message and an engine run")
 	}
@@ -25,9 +26,9 @@ func (a *app) daemon(ctx context.Context) error {
 	}
 
 	// An agent engine answers by shelling out to this same binary, which must not
-	// open the crypto store a second time. The socket is how it comes back in.
-	socket := a.profile.Socket
-	eng := a.newEngine(socket)
+	// open the crypto store a second time. The socket is how it comes back in; it is
+	// already bound by the time we get here.
+	eng := a.newEngine(a.profile.Socket)
 
 	b := bot.New(bot.Deps{
 		Chat:         a.chat,
@@ -39,11 +40,12 @@ func (a *app) daemon(ctx context.Context) error {
 		MaxBody:      matrix.MaxBody,
 		Chunk:        matrix.Chunk,
 		Workdir:      workdir(),
+		SessionIdle:  sessionIdle(),
 		SentInThread: a.sends.count,
 	})
 
 	go func() {
-		if err := ipc.Serve(ctx, socket, a.handleIPC); err != nil {
+		if err := ipc.ServeOn(ctx, ln, a.handleIPC); err != nil {
 			log.Printf("ipc: %v", err)
 		}
 	}()
@@ -52,7 +54,7 @@ func (a *app) daemon(ctx context.Context) error {
 	a.reportDecryptFailures()
 
 	log.Printf("momo as %s (device %s), obeying %s, engine=%s, workdir=%s, socket=%s",
-		self, device, a.allowed, eng.Name(), workdir(), socket)
+		self, device, a.allowed, eng.Name(), workdir(), a.profile.Socket)
 
 	err = a.mx.Sync(ctx, matrix.Handlers{
 		OnMessage: func(ctx context.Context, m core.Message) {
@@ -164,6 +166,18 @@ func (a *app) newEngine(socket string) core.Engine {
 }
 
 func workdir() string { return envOr("WORKDIR", os.Getenv("HOME")) }
+
+// sessionIdle defaults to an hour: long enough that picking a conversation back up
+// after lunch still has its context, short enough that yesterday's thread does not
+// resume a huge transcript.
+func sessionIdle() time.Duration {
+	if v := os.Getenv("SESSION_IDLE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return time.Hour
+}
 
 func engineTimeout() time.Duration {
 	if v := os.Getenv("ENGINE_TIMEOUT"); v != "" {

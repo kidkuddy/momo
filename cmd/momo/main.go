@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -37,6 +38,11 @@ const usage = `momo — Matrix bot and CLI
   momo clear <room>                    redact momo's messages, wipe local history and sessions
                                        [--local] keep the room, wipe locally only
                                        [--sessions-only] forget sessions, keep the transcript
+  momo start <room> --message <ping>   open a piece of work: ping, pin, run a brief
+                                       [--kind K] [--brief T|--brief-file P] [--wip N]
+  momo threads [--kind K] [--room R]   what is still outstanding
+  momo resolve <room> <thread>         mark done; also settles older threads of the
+                                       same kind [--only] [--keep-pin]
   momo rooms                           list joined rooms
   momo join <room|alias>
   momo leave <room>
@@ -68,6 +74,7 @@ var forwardable = map[string]bool{
 	"typing": true, "read": true, "poll": true, "endpoll": true,
 	"poll-results": true, "rooms": true, "join": true, "leave": true,
 	"invite": true, "whoami": true, "history": true, "clear": true,
+	"start": true, "resolve": true, "threads": true,
 }
 
 func main() {
@@ -128,12 +135,21 @@ func main() {
 		// because nothing else holds it.
 	}
 
+	// Claim the socket before the slow work of opening the crypto store, so a CLI
+	// command that arrives during startup waits for us instead of falling back to
+	// opening the store itself and contending with a daemon that is still booting.
+	var ln net.Listener
+	if cmd == "daemon" {
+		ln, err = ipc.Listen(profile.Socket)
+		fail(err)
+	}
+
 	app, err := open(ctx, profile)
 	fail(err)
 	defer app.Close()
 
 	if cmd == "daemon" {
-		fail(app.daemon(ctx))
+		fail(app.daemon(ctx, ln))
 		return
 	}
 	out, err := app.runCommand(ctx, cmd, rest)

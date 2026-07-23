@@ -304,9 +304,55 @@ type Engine interface {
 	Name() string
 }
 
+// ThreadState is where a piece of work has got to.
+type ThreadState string
+
+const (
+	// ThreadOpen is waiting on the user.
+	ThreadOpen ThreadState = "open"
+	// ThreadResolved means the user dealt with it.
+	ThreadResolved ThreadState = "resolved"
+	// ThreadSuperseded means a later thread of the same kind took over, or the
+	// user did the work late and the queued duplicates no longer matter.
+	ThreadSuperseded ThreadState = "superseded"
+)
+
+// Thread is a unit of work momo raised with the user: a reminder, a proposal, a
+// scheduled ritual. It exists because scheduled work has to survive being ignored —
+// which is the normal case, not the exception.
+type Thread struct {
+	RoomID     string
+	ThreadRoot string
+	// Kind groups recurring work, e.g. "inbox". Threads of one kind supersede each
+	// other, because three unread inbox reminders are not three tasks.
+	Kind string
+	// Brief is what this thread is for. Unlike the agent session it outlives idle
+	// expiry, so a stale thread answered tomorrow still knows its purpose.
+	Brief      string
+	State      ThreadState
+	CreatedAt  time.Time
+	ResolvedAt time.Time
+}
+
+func (t Thread) Open() bool { return t.State == ThreadOpen }
+
+// Threads is the record of outstanding work.
+type Threads interface {
+	CreateThread(ctx context.Context, t Thread) error
+	Thread(ctx context.Context, roomID, threadRoot string) (Thread, error)
+	OpenThreads(ctx context.Context, roomID, kind string) ([]Thread, error)
+	// SetThreadState closes one thread. Passing sameKind also closes every other
+	// open thread of that kind: doing the work late settles the backlog of
+	// reminders about it, it does not leave them outstanding.
+	SetThreadState(ctx context.Context, roomID, threadRoot string, state ThreadState, sameKind bool) (int, error)
+}
+
 // Sessions maps a thread to the agent session that owns it, so a conversation
 // survives across messages and across restarts.
 type Sessions interface {
-	SessionFor(ctx context.Context, roomID, threadRoot string) (string, error)
+	// SessionFor returns the session to resume, or empty to start fresh. Sessions
+	// older than idle are not returned: resuming an ever-growing context costs more
+	// every turn, and a conversation abandoned hours ago is rarely worth continuing.
+	SessionFor(ctx context.Context, roomID, threadRoot string, idle time.Duration) (string, error)
 	SetSession(ctx context.Context, roomID, threadRoot, sessionID string) error
 }

@@ -29,20 +29,37 @@ counting rules as a pure function.
 
 **Skills.** `matrix-cli`, `matrix-events`, `matrix-e2ee`, `momo-dev`.
 
+## Done — scheduled interruption
+
+momo's inverted direction: something external decides you should be prompted, and
+momo creates the conversation with the work already prepared.
+
+- [x] `momo start` — post a ping, pin it, record a durable brief, run an agent in the
+      background that answers in the thread. Returns the thread id immediately.
+- [x] Threads carry state. `momo threads` lists what is outstanding; `momo resolve`
+      closes it and settles every other open thread of the same kind, because three
+      unanswered inbox reminders are one overdue task.
+- [x] `--wip N` caps how many threads of a kind can pile up. Hitting it is a normal
+      outcome, not an error.
+- [x] Agent sessions expire after `SESSION_IDLE` (default 1h). The brief outlives
+      them, so a stale thread answered tomorrow still knows its purpose.
+- [x] `momo-threads` skill, installed to `~/.claude/skills` by `make install-skills`,
+      so a krakoa workflow step can drive momo with no wiring.
+
 ## In progress — the agent engine
 
 The point of the project. An incoming message spawns an agent session in the
 background; the agent reasons and replies by calling the momo CLI, so anything momo
 can do in Matrix, the agent can do.
 
-- [ ] **Engine interface that carries context.** `Run(ctx, Session) (Result, error)`
+- [x] **Engine interface that carries context.** `Run(ctx, Session) (Result, error)`
       where Session has the room, thread and prior session id. An engine may answer
       by returning text, or by acting through the CLI and reporting that it did.
       Claude Code is one implementation; Codex or anything else is another.
-- [ ] **Session continuity.** Thread root maps to an agent session id, passed back as
+- [x] **Session continuity.** Thread root maps to an agent session id, passed back as
       `--resume`. Without it every message starts a fresh agent with no memory of the
       conversation — the single thing that makes momo feel like a mailbox.
-- [ ] **Daemon IPC.** The daemon owns the crypto store. A second process cannot
+- [x] **Daemon IPC.** The daemon owns the crypto store. A second process cannot
       safely share an olm account with it: concurrent use of the same megolm ratchet
       risks reusing a message index. So `momo send` from inside an agent session must
       forward to the running daemon over a unix socket rather than open the store
@@ -77,7 +94,11 @@ can do in Matrix, the agent can do.
 
 ## Operations
 
-- [ ] launchd plist so momo survives reboot (SIGTERM, not SIGKILL — it checkpoints)
+- [x] launchd plist. **Install the binary first** (`make install` → `~/.local/bin`);
+      pointing the service at the repo build output means a rebuild replaces the file
+      under a starting process, which wedges it in dyld before `main()` runs. That
+      failure looks like a running daemon with no socket and no log.
+
 - [ ] Log to file with rotation
 - [ ] Notice when the sync loop dies; a silent bot looks identical to an idle one
 - [ ] Restore-test for real: delete `momo.db`, log in fresh, `momo restore`

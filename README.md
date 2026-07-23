@@ -1,69 +1,57 @@
 # momo
 
 A Matrix bot that is the chat UI for [Claude Code](https://claude.com/claude-code).
-You talk to it in an end-to-end encrypted DM; it runs Claude Code on your machine and
-answers in the thread.
+DM it from your phone; it spawns a Claude Code session on your machine, which reasons
+and then replies by calling momo's own CLI. So anything momo can do in Matrix, the
+agent can do — send, upload a diff, react, run a poll.
 
-It is also a general-purpose Matrix CLI, so an agent can act in Matrix — send, upload,
-react, edit, poll, read history — without touching the protocol.
+It also raises work *with* you, on a schedule. A reminder or a ritual opens a pinned
+thread with the work already prepared, so responding is one tap instead of a context
+switch.
 
-> **This is a remote code execution surface by design.** With `ENGINE=claude`, anyone
-> who can post in an allowed room runs Claude Code on your machine as you. A single
-> allowlisted user ID is the only gate. Put 2FA on that Matrix account.
+Named after Momo Ayase from *Dandadan*, who also deals with whatever turns up so you
+do not have to.
 
-## Status
+> **This is remote code execution by design.** With `ENGINE=claude`, anyone who can
+> post in an allowed room runs Claude Code on your machine, as you. A single
+> allowlisted Matrix user ID is the only gate. Put 2FA on that account.
 
-Working: end-to-end encryption including DMs, cross-signing and room key backup; the
-Matrix CLI; message history; polls with vote tallying; multiple bot profiles; the
-agent engine — a message spawns a Claude Code session that replies for itself through
-the CLI, resuming per thread; scheduled reminders that open a prepared thread when
-they come due; and thread tracking with pinning, WIP limits and nudges.
+## Quick start
 
-Not built: streaming output, approval gates, secret redaction. See
-[ROADMAP.md](ROADMAP.md).
-
-## Requirements
-
-- Go 1.26+
-- A Matrix account for the bot, separate from your own
-- `claude` on `PATH`, only if you set `ENGINE=claude`
-
-## Setup
+Needs Go 1.26+, a Matrix account for the bot that is not your own, and `claude` on
+`PATH` if you want the agent engine.
 
 ```bash
-git clone https://github.com/kidkuddy/momo
-cd momo
+git clone https://github.com/kidkuddy/momo && cd momo
 cp .env.example .env      # then fill it in
 make build
 ```
 
-`.env`:
-
 ```sh
 HOMESERVER=https://matrix.org
-BOT_USER=yourbot                    # localpart, first login only
-BOT_PASSWORD=...                    # first login only, but keep it: recovery needs it
-ALLOWED_USER=@you:matrix.org        # the only user momo obeys
-# ENGINE=claude                     # omit to stay on the echo engine
+BOT_USER=yourbot                 # localpart, first login only
+BOT_PASSWORD=...                 # first login only — but keep it, recovery needs it
+ALLOWED_USER=@you:matrix.org     # the only user momo obeys
+# ENGINE=claude                  # omit and you get the harmless echo engine
 # WORKDIR=/path/to/project
 ```
 
-Then, once:
+Then once, or clients show a shield on every message and a lost database takes your
+room keys with it:
 
 ```bash
-make crosssign    # sign the bot's own device, or clients show a shield
+make crosssign    # signs the bot's own device; prints a recovery key
 make backup       # server-side room key backup
 ```
 
-`crosssign` prints a recovery key. **Store it offline** — it is the only way to sign a
-replacement device or restore room keys later. On macOS:
+**Store that recovery key offline.** It is shown once, saved nowhere, and is the only
+way to sign a replacement device or restore room keys. The Makefile reads it back from
+the macOS keychain:
 
 ```bash
 security add-generic-password -a "@yourbot:matrix.org" \
   -s momo-matrix-recovery-key -w "<the key>" -U
 ```
-
-The Makefile's `crosssign`/`backup`/`restore` targets read it from there.
 
 Start it, then DM the bot from your own account:
 
@@ -71,76 +59,48 @@ Start it, then DM the bot from your own account:
 make run
 ```
 
-## Profiles
+## The `goolm` build tag
 
-A profile is a directory under `~/.momo` holding one bot's entire identity —
-credentials, crypto store, history, socket. Running two bots means two profiles and
-two daemons, sharing nothing.
+Every `go` command needs `-tags=goolm`. It selects mautrix's pure-Go olm; without it
+the build links libolm through cgo and fails on a missing `olm/olm.h`. The Makefile
+always passes it — this only bites you running `go build` by hand.
 
-```
-~/.momo/momo/
-  config        # KEY=VALUE, same keys as .env
-  state.json    # access token, device id, pickle key
-  momo.db       # olm/megolm keys, room state, sync position
-  history.db    # message history
-  momo.sock     # daemon socket
-```
+## Reminders and threads
 
-```bash
-momo profiles                      # list them
-momo --profile work send ...       # act as a particular bot
-MOMO_PROFILE=work momo daemon      # same thing
-```
+Ask in chat — "remind me to pay the invoice tomorrow at nine" — and the agent turns it
+into an absolute time and calls `momo schedule add`. momo itself takes only exact times
+and cron expressions; reading "after lunch" is the agent's job, since it already knows
+the date and your timezone.
 
-Environment variables override the profile config, so `ENGINE=echo momo --profile work
-daemon` still works for a one-off. Without `--profile`, momo uses files in the working
-directory, which is what an install predating profiles looks like.
-
-## Running as a service (macOS)
-
-```bash
-make service PROFILE=momo     # writes a LaunchAgent plist; read it
-make service-load             # start it, and at every login
-make service-status
-make service-unload
-```
-
-launchd hands a process a minimal `PATH`, so set `CLAUDE_BIN` to an absolute path in
-the profile config or the agent will not be found.
+When it fires, a pinned thread opens with the work already prepared. React ✅ on the
+root to close it, which also settles older threads of the same `--kind` — three
+unanswered inbox reminders are one overdue task. Missed occurrences are skipped, not
+replayed: three days offline means one thread today, not three.
 
 ## CLI
 
 ```
-momo daemon                      run the bot
-momo send <room> <text>          [--thread ID] [--reply ID] [--notice] [--emote] [--html S]
-momo upload <room> <path>        [--as image|audio|video|file]
-momo react|edit|redact <room> <event> ...
-momo poll <room> <question> <answer>...
+momo daemon                          run the bot
+momo send|upload|react|edit|redact|typing|read <room> …
+momo poll|endpoll|poll-results <room> …
 momo rooms|join|leave|invite|whoami
 momo history [--room ID] [--thread ID] [--limit N]
-momo clear <room>                start over: redact momo's messages, wipe local
-                                 history and agent sessions
-                                 [--local] wipe locally only
-                                 [--sessions-only] forget sessions, keep transcript
+momo clear <room>                    redact momo's messages, wipe local history
 
-  raising work with you
-momo start --message <ping>      open a pinned thread with the work prepared
-                                 [--kind K] [--brief T|--brief-file P] [--wip N]
-                                 room defaults to the DM with ALLOWED_USER
-momo threads                     what is still outstanding
-momo nudge                       push on threads that have stalled
-momo resolve <room> <thread>     mark done (or just react ✅ on the thread)
+momo start --message <ping>          open a pinned thread, work prepared
+                                     (room defaults to the DM with ALLOWED_USER)
+momo threads                         what is still outstanding
+momo nudge                           push on threads that have stalled
+momo resolve <room> <thread>         mark done
+momo schedule add|list|rm            reminders that open a thread when they fire
 
-  reminders
-momo schedule add --message <ping>  --at <time> | --in <dur> | --cron <expr>
-                                    [--every <dur>] [--brief …] [--kind K] [--wip N]
-momo schedule list|rm <id>
-
-  setup and recovery
-momo profiles                    list configured bots
-momo crosssign|backup|restore [recovery key]
-momo reset-session               forget token+device, forcing a fresh login
+momo profiles                        list configured bots
+momo crosssign|backup|restore|reset-session
 ```
+
+`momo --help` lists the flags. The exhaustive reference lives in `.claude/skills/` —
+`matrix-cli`, `matrix-events`, `matrix-e2ee`, `momo-dev`, `momo-threads`, which
+`make install-skills` symlinks into `~/.claude/skills`.
 
 Every command that creates an event prints its event ID and nothing else, so it
 composes:
@@ -149,6 +109,17 @@ composes:
 EV=$(momo send "$ROOM" "working on it")
 momo react "$ROOM" "$EV" 👀
 ```
+
+## Profiles and running it as a service
+
+A profile is a directory under `~/.momo/<name>` holding one bot's whole identity —
+config, credentials, crypto store, history, socket. Pick one with `--profile work`.
+
+To run momo in the background: `make install` then `make service PROFILE=momo`, which
+writes a LaunchAgent plist for you to read before `make service-load`. Install first —
+pointing the service at the repo build output means a rebuild swaps the file under a
+starting process. launchd also gives it a minimal `PATH`, so `CLAUDE_BIN` has to be an
+absolute path or the agent is not found.
 
 ## Architecture
 
@@ -159,67 +130,37 @@ concrete types together.
 ```
 cmd/momo/          composition root + CLI
 internal/core/     domain types and ports
-internal/matrix/   Matrix adapter — the only package that imports mautrix
+internal/matrix/   the only package that imports mautrix
 internal/store/    SQLite history
 internal/engine/   echo / Claude Code — swap in another agent here
 internal/bot/      the rules: who gets answered, and how
 internal/config/   profile resolution
-internal/ipc/      unix socket so an agent session can act through the daemon
+internal/ipc/      unix socket
 internal/schedule/ when a reminder fires next
 ```
 
-### Why the socket exists
-
-The daemon owns an olm account. A second process cannot share it: both would load the
-same megolm ratchet, encrypt from the same index and save, so two messages go out
-under one message index — a silent cryptographic fault. So when an agent session runs
-`momo send`, the CLI forwards it to the daemon over a unix socket instead of opening
+The socket exists because the daemon owns an olm account and a second process cannot
+share it: both would encrypt from the same megolm index, a silent cryptographic fault.
+So `momo send` from inside an agent session forwards to the daemon rather than opening
 the crypto store. With no daemon running it opens it directly, which is safe.
-
-Three files hold state, and they are not interchangeable:
-
-| File | Holds |
-|---|---|
-| `state.json` | access token, device id, pickle key |
-| `momo.db` | olm/megolm keys, room state, sync position (mautrix owns the schema) |
-| `history.db` | messages, reactions, polls, threads, reminders (momo owns this one) |
-
-## Build tag
-
-Every `go` command needs `-tags=goolm`, which selects mautrix's pure-Go olm. Without
-it the build links libolm through cgo and fails on a missing `olm/olm.h`. The Makefile
-always passes it.
-
-## Skills
-
-`.claude/skills/` ships four skills so Claude Code can drive and modify momo:
-`matrix-cli`, `matrix-events`, `matrix-e2ee`, `momo-dev`.
-
-## Reminders
-
-Ask momo in chat — "remind me to pay the invoice tomorrow at nine" — and it schedules
-it. When it fires, a pinned thread opens with the work already prepared.
-
-momo itself takes only exact times and cron expressions; translating what you said is
-the agent's job, since it already knows the date and your timezone. Missed
-occurrences are skipped rather than replayed: three days offline means one thread
-today, not three.
 
 ## Known limits
 
-- **Polls are unstable.** MSC3381 has no stable room version; momo uses the
+- **Polls are unstable.** MSC3381 has no stable room version, so momo uses the
   `org.matrix.msc3381.poll.*` namespace. Element understands it today.
-- **No SAS verification.** momo cannot be verified as a *user*, so "Never send
-  encrypted messages to unverified sessions" must stay off in your client.
-- **matrix.org is not fully scriptable.** It runs MAS, so device deletion and
-  cross-signing resets need a browser. Plain Synapse does not.
-- **`clear` cannot remove your messages.** Redacting someone else's event needs a
-  power level momo does not have in a DM you created. It redacts its own and wipes
-  what it stores; yours stay until you remove them in your client.
 - **The agent runs with `bypassPermissions` by default.** A headless session has
   nobody to approve a prompt, so anything stricter means it refuses and never replies.
-  Narrow it with `ENGINE_ALLOWED_TOOLS`. The real fix is an approval gate in the chat,
-  which is on the roadmap.
+  Narrow it with `ENGINE_ALLOWED_TOOLS`; an approval gate in the chat is on the
+  roadmap.
+- **matrix.org needs a browser.** It runs MAS, so device deletion and cross-signing
+  resets are not scriptable. Plain Synapse is.
+- **`clear` cannot remove your messages.** Redacting someone else's event needs a
+  power level momo does not have in a DM you created. It redacts its own and wipes
+  what it stores; yours stay until you delete them in your client.
+- **momo cannot be verified as a user** — no SAS — so "never send encrypted messages
+  to unverified sessions" has to stay off in your client.
+
+Not built yet: streaming, approval gates, secret redaction. See [ROADMAP.md](ROADMAP.md).
 
 ## License
 

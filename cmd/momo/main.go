@@ -38,7 +38,8 @@ const usage = `momo — Matrix bot and CLI
   momo clear <room>                    redact momo's messages, wipe local history and sessions
                                        [--local] keep the room, wipe locally only
                                        [--sessions-only] forget sessions, keep the transcript
-  momo start <room> --message <ping>   open a piece of work: ping, pin, run a brief
+  momo start --message <ping>          open a piece of work: ping, pin, run a brief
+                                       [--room R] defaults to the DM with ALLOWED_USER
                                        [--kind K] [--brief T|--brief-file P] [--wip N]
   momo threads [--kind K] [--room R]   what is still outstanding
   momo resolve <room> <thread>         mark done; also settles older threads of the
@@ -47,6 +48,7 @@ const usage = `momo — Matrix bot and CLI
   momo nudge                           push on threads still open [--older-than 12h]
                                        [--kind K] [--min-interval 20h] [--dry-run]
   momo schedule add --message <ping>   a reminder that opens a thread when it fires
+                                       [--room R] defaults to the DM with ALLOWED_USER
                                        when: --at <time> | --in <dur> | --cron <expr>
                                        repeat: --every <dur> | --cron <expr>
                                        [--brief T|--brief-file P] [--kind K] [--wip N]
